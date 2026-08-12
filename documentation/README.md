@@ -46,6 +46,7 @@ C# Wrapper (binding/SkiaSharp/)  →  P/Invoke  →  C API (externals/skia/src/c
 | Document | Description |
 |----------|-------------|
 | [linux-assets.md](linux-assets.md) | Linux native package information |
+| [wasm-symbol-renaming.md](wasm-symbol-renaming.md) | Avoiding duplicate-symbol collisions in wasm static linking |
 
 ## Quick Build
 
