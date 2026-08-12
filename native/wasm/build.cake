@@ -10,26 +10,30 @@ string[] EMSCRIPTEN_FEATURES = Argument("emscriptenFeatures", EnvironmentVariabl
     .Split(",").Where(f => f != "none").ToArray();
 bool SUPPORT_GPU = SUPPORT_GPU_VAR == "1" || SUPPORT_GPU_VAR == "true";
 
+// Off by default: renaming is only useful (and only verified) when this static library ends up
+// statically linked alongside a host application's own copies of freetype2/libjpeg-turbo (eg. a
+// Unity build). Leaving this off keeps the default wasm build exactly as it was before.
+string SYMBOL_RENAMES_VAR = Argument("wasmRenameThirdPartySymbols", EnvironmentVariable("WASM_RENAME_THIRDPARTY_SYMBOLS") ?? "false").ToLower();
+bool ENABLE_SYMBOL_RENAMES = SYMBOL_RENAMES_VAR == "1" || SYMBOL_RENAMES_VAR == "true";
+
 string CC = Argument("cc", "emcc");
 string CXX = Argument("cxx", "em++");
 string AR = Argument("ar", "emar");
+string NM = Argument("nm", "emnm");
 string COMPILERS = $"cc='{CC}' cxx='{CXX}' ar='{AR}' ";
 
-Task("libSkiaSharp")
-    .IsDependentOn("git-sync-deps")
-    .WithCriteria(IsRunningOnLinux())
-    .Does(() =>
+// Symbols that freetype2/libjpeg-turbo would otherwise export as globals (eg. FT_*, jpeg_*, and
+// their non-static internal helpers) get renamed with this prefix when ENABLE_SYMBOL_RENAMES is
+// on, so this static library cannot collide with a host application's own copies of the same
+// libraries when both are statically linked together. Regenerate with the
+// 'generate-wasm-symbol-renames' target after the freetype2/libjpeg-turbo checkout changes (ie.
+// after a Skia DEPS bump) and commit the result.
+string SYMBOL_RENAME_PREFIX = "sksharp_";
+FilePath SYMBOL_RENAMES_HEADER = MakeAbsolute(ROOT_PATH.CombineWithFilePath("native/wasm/libSkiaSharp/wasm_symbol_renames.h"));
+
+string WasmSkiaGnArgs(bool hasSimdEnabled, bool hasThreadingEnabled, bool hasWasmEH, bool includeSymbolRenames)
 {
-    bool hasSimdEnabled = EMSCRIPTEN_FEATURES.Contains("simd") || EMSCRIPTEN_FEATURES.Contains("_simd");
-    bool hasThreadingEnabled = EMSCRIPTEN_FEATURES.Contains("mt");
-    bool hasWasmEH = EMSCRIPTEN_FEATURES.Contains("_wasmeh");
-
-    var emscriptenFeaturesModifiers = 
-        EMSCRIPTEN_FEATURES
-        .Where(f => !f.StartsWith("_"))
-        .ToArray();
-
-    GnNinja($"wasm", "SkiaSharp",
+    return
         $"target_os='linux' " +
         $"target_cpu='wasm' " +
         $"is_static_skiasharp=true " +
@@ -61,18 +65,121 @@ Task("libSkiaSharp")
         $"skia_enable_skottie=true " +
         $"use_PIC=false " +
         $"extra_cflags=[ " +
-        $"  '-DSKIA_C_DLL', '-DXML_POOR_ENTROPY', " + 
+        $"  '-DSKIA_C_DLL', '-DXML_POOR_ENTROPY', " +
         $" {(!hasSimdEnabled ? "'-DSKNX_NO_SIMD', " : "")} '-DSK_DISABLE_AAA', '-DGR_GL_CHECK_ALLOC_WITH_GET_ERROR=0', " +
         $"  '-s', 'WARN_UNALIGNED=1' " + // '-s', 'USE_WEBGL2=1' (experimental)
         $"  { (hasSimdEnabled ? ", '-msimd128'" : "") } " +
         $"  { (hasThreadingEnabled ? ", '-pthread'" : "") } " +
         $"  { (hasWasmEH ? ", '-fwasm-exceptions'" : "") } " +
+        $"  { (includeSymbolRenames ? $", '-include', '{SYMBOL_RENAMES_HEADER.FullPath}'" : "") } " +
         $"] " +
         // SIMD support is based on https://github.com/google/skia/blob/1f193df9b393d50da39570dab77a0bb5d28ec8ef/modules/canvaskit/compile.sh#L57
         $"extra_cflags_cc=[ '-frtti' { (hasSimdEnabled ? ", '-msimd128'" : "") } { (hasThreadingEnabled ? ", '-pthread'" : "") } { (hasWasmEH ? ", '-fwasm-exceptions'" : "") } ] " +
         $"skia_emsdk_dir='{EMSCRIPTEN_ROOT}'" +
         COMPILERS +
-        ADDITIONAL_GN_ARGS);
+        ADDITIONAL_GN_ARGS;
+}
+
+// Reads an archive's global, defined symbols -- ie. the ones that would participate in a
+// "duplicate symbol" collision if a host application statically links its own copy of the same
+// library alongside this one.
+HashSet<string> GetDefinedGlobalSymbols(FilePath archive)
+{
+    RunProcess(NM, $"--defined-only --extern-only \"{archive.FullPath}\"", out IEnumerable<string> stdout);
+
+    var symbols = new HashSet<string>();
+    foreach (var line in stdout) {
+        // eg. "0000000000000010 T FT_Init_FreeType" -- archive member header lines don't match.
+        var parts = line.Trim().Split((char[])null, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 3 && parts[1].Length == 1 && System.Text.RegularExpressions.Regex.IsMatch(parts[0], "^[0-9a-fA-F]+$"))
+            symbols.Add(parts[2]);
+    }
+    return symbols;
+}
+
+// Finds which .a in outDir defines anchorSymbol, without assuming what GN names the output file
+// for a given target (the third_party() GN template doesn't guarantee it).
+FilePath FindArchiveContaining(DirectoryPath outDir, string anchorSymbol)
+{
+    FilePath found = null;
+    foreach (var file in GetFiles($"{outDir}/*.a")) {
+        if (GetDefinedGlobalSymbols(file).Contains(anchorSymbol)) {
+            if (found != null)
+                throw new Exception($"Symbol '{anchorSymbol}' was found in both '{found}' and '{file}' -- cannot uniquely identify the archive.");
+            found = file;
+        }
+    }
+    if (found == null)
+        throw new Exception($"Could not find an archive defining '{anchorSymbol}' under '{outDir}' -- did the discovery build succeed?");
+    return found;
+}
+
+// Builds freetype2 and libjpeg-turbo in isolation (a dedicated out dir, so the normal
+// 'libSkiaSharp' build/output is untouched) and records every global symbol they define, so
+// 'libSkiaSharp' can rename all of them and avoid colliding with a host application's own copies
+// of the same libraries. Re-run this -- and commit its output -- after the freetype2/libjpeg-turbo
+// checkout changes (ie. after a Skia DEPS bump); otherwise new symbols they introduce would be
+// missed by the rename and could still collide.
+Task("generate-wasm-symbol-renames")
+    .IsDependentOn("git-sync-deps")
+    .WithCriteria(IsRunningOnLinux())
+    .Does(() =>
+{
+    var args = WasmSkiaGnArgs(hasSimdEnabled: false, hasThreadingEnabled: false, hasWasmEH: false, includeSymbolRenames: false);
+
+    GnNinja("wasm-symgen", "third_party/freetype2:freetype2", args);
+    GnNinja("wasm-symgen", "third_party/libjpeg-turbo:libjpeg", args);
+
+    var symgenOut = SKIA_PATH.Combine("out/wasm-symgen");
+
+    var freetypeArchive = FindArchiveContaining(symgenOut, "FT_Init_FreeType");
+    var libjpegArchive = FindArchiveContaining(symgenOut, "jpeg_CreateDecompress");
+
+    var symbols = new SortedSet<string>();
+    symbols.UnionWith(GetDefinedGlobalSymbols(freetypeArchive));
+    symbols.UnionWith(GetDefinedGlobalSymbols(libjpegArchive));
+
+    if (symbols.Count == 0)
+        throw new Exception("No symbols were discovered for freetype2/libjpeg-turbo -- something is wrong with the discovery build.");
+
+    var lines = new List<string> {
+        "// Generated by the 'generate-wasm-symbol-renames' cake target. DO NOT EDIT BY HAND.",
+        "// Renames every global symbol freetype2/libjpeg-turbo would otherwise export, so this",
+        "// static library cannot collide with a host application's own copies of the same",
+        "// libraries (eg. Unity's bundled libfreetype2/libjpeg) when both get statically linked",
+        "// together. Regenerate via the 'generate-wasm-symbol-renames' cake target after the",
+        "// freetype2/libjpeg-turbo checkout changes.",
+        "#ifndef SKIASHARP_WASM_SYMBOL_RENAMES_H",
+        "#define SKIASHARP_WASM_SYMBOL_RENAMES_H",
+    };
+    foreach (var symbol in symbols)
+        lines.Add($"#define {symbol} {SYMBOL_RENAME_PREFIX}{symbol}");
+    lines.Add("#endif");
+
+    EnsureDirectoryExists(SYMBOL_RENAMES_HEADER.GetDirectory());
+    System.IO.File.WriteAllLines(SYMBOL_RENAMES_HEADER.FullPath, lines);
+
+    Information($"Wrote {symbols.Count} symbol renames to '{SYMBOL_RENAMES_HEADER}'.");
+});
+
+Task("libSkiaSharp")
+    .IsDependentOn("git-sync-deps")
+    .WithCriteria(IsRunningOnLinux())
+    .Does(() =>
+{
+    if (ENABLE_SYMBOL_RENAMES && !FileExists(SYMBOL_RENAMES_HEADER))
+        throw new Exception($"Missing '{SYMBOL_RENAMES_HEADER}'. Run the 'generate-wasm-symbol-renames' cake target once and commit its output before building with --wasmRenameThirdPartySymbols=true.");
+
+    bool hasSimdEnabled = EMSCRIPTEN_FEATURES.Contains("simd") || EMSCRIPTEN_FEATURES.Contains("_simd");
+    bool hasThreadingEnabled = EMSCRIPTEN_FEATURES.Contains("mt");
+    bool hasWasmEH = EMSCRIPTEN_FEATURES.Contains("_wasmeh");
+
+    var emscriptenFeaturesModifiers =
+        EMSCRIPTEN_FEATURES
+        .Where(f => !f.StartsWith("_"))
+        .ToArray();
+
+    GnNinja($"wasm", "SkiaSharp", WasmSkiaGnArgs(hasSimdEnabled, hasThreadingEnabled, hasWasmEH, includeSymbolRenames: ENABLE_SYMBOL_RENAMES));
 
     var a = SKIA_PATH.CombineWithFilePath($"out/wasm/libSkiaSharp.a");
 
