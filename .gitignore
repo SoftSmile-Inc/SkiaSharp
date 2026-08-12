@@ -323,3 +323,7 @@ fastlane/screenshots
 .docs
 .playwright-mcp/
 .github/aw/logs/
+
+# Generated wasm third-party symbol-rename headers (native/wasm --wasmRenameThirdPartySymbols)
+# See documentation/wasm-symbol-renaming.md
+native/wasm/libSkiaSharp/wasm_symbol_renames.h

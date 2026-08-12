@@ -1,10 +1,23 @@
 #!/usr/bin/env bash
 set -e
 
-DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+DIR="$( cd "$( dirname "$0" )" >/dev/null 2>&1 && pwd )"
 
 EMSCRIPTEN_VERSION="${1:-3.1.56}"
 FEATURES="${2:-_wasmeh,st}"
+
+case "$1" in
+    --*|"") ;;
+    *)
+        VERSION_ARGS="--build-arg EMSCRIPTEN_VERSION=$1"
+        EMSCRIPTEN_VERSION=$1
+        shift
+        ;;
+esac
+
+# any remaining arguments (eg. --wasmRenameThirdPartySymbols=true) are forwarded as extra
+# `dotnet cake` arguments inside the container.
+EXTRA_CAKE_ARGS="$@"
 
 # Use linux/amd64 platform for Docker — older emscripten versions don't publish arm64 binaries
 PLATFORM_ARGS=""
@@ -20,6 +33,6 @@ if [ -n "$FEATURES" ]; then
 fi
 
 (cd "$DIR/../../../../.." && \
-    docker run --rm $PLATFORM_ARGS --name skiasharp-wasm-$EMSCRIPTEN_VERSION --volume "$(pwd)":/work skiasharp-wasm:$EMSCRIPTEN_VERSION /bin/bash -c "\
+    docker run --rm $PLATFORM_ARGS --name skiasharp-wasm-$EMSCRIPTEN_VERSION --volume "$(pwd)":/work skiasharp-wasm:$EMSCRIPTEN_VERSION $EXTRA_CAKE_ARGS /bin/bash -c "\
         dotnet tool restore ; \
         dotnet cake --target=externals-wasm --emscriptenVersion=$EMSCRIPTEN_VERSION $FEATURES_ARG")
