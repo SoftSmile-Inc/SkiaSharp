@@ -11,8 +11,9 @@ string[] EMSCRIPTEN_FEATURES = Argument("emscriptenFeatures", EnvironmentVariabl
 bool SUPPORT_GPU = SUPPORT_GPU_VAR == "1" || SUPPORT_GPU_VAR == "true";
 
 // Off by default: renaming is only useful (and only verified) when this static library ends up
-// statically linked alongside a host application's own copies of freetype2/libjpeg-turbo (eg. a
-// Unity build). Leaving this off keeps the default wasm build exactly as it was before.
+// statically linked alongside a host application's own copies of freetype2/libjpeg-turbo/zlib/
+// libpng (eg. a Unity build). Leaving this off keeps the default wasm build exactly as it was
+// before.
 string SYMBOL_RENAMES_VAR = Argument("wasmRenameThirdPartySymbols", EnvironmentVariable("WASM_RENAME_THIRDPARTY_SYMBOLS") ?? "false").ToLower();
 bool ENABLE_SYMBOL_RENAMES = SYMBOL_RENAMES_VAR == "1" || SYMBOL_RENAMES_VAR == "true";
 
@@ -22,12 +23,12 @@ string AR = Argument("ar", "emar");
 string NM = Argument("nm", "emnm");
 string COMPILERS = $"cc='{CC}' cxx='{CXX}' ar='{AR}' ";
 
-// Symbols that freetype2/libjpeg-turbo would otherwise export as globals (eg. FT_*, jpeg_*, and
-// their non-static internal helpers) get renamed with this prefix when ENABLE_SYMBOL_RENAMES is
-// on, so this static library cannot collide with a host application's own copies of the same
-// libraries when both are statically linked together. Regenerate with the
-// 'generate-wasm-symbol-renames' target after the freetype2/libjpeg-turbo checkout changes (ie.
-// after a Skia DEPS bump) and commit the result.
+// Symbols that freetype2/libjpeg-turbo/zlib/libpng would otherwise export as globals (eg. FT_*,
+// jpeg_*, deflate*/inflate*, png_*, and their non-static internal helpers) get renamed with this
+// prefix when ENABLE_SYMBOL_RENAMES is on, so this static library cannot collide with a host
+// application's own copies of the same libraries when both are statically linked together.
+// Regenerate with the 'generate-wasm-symbol-renames' target after any of those checkouts change
+// (ie. after a Skia DEPS bump) and commit the result.
 string SYMBOL_RENAME_PREFIX = "sksharp_";
 FilePath SYMBOL_RENAMES_HEADER = MakeAbsolute(ROOT_PATH.CombineWithFilePath("native/wasm/libSkiaSharp/wasm_symbol_renames.h"));
 
@@ -114,11 +115,11 @@ FilePath FindArchiveContaining(DirectoryPath outDir, string anchorSymbol)
     return found;
 }
 
-// Builds freetype2 and libjpeg-turbo in isolation (a dedicated out dir, so the normal
-// 'libSkiaSharp' build/output is untouched) and records every global symbol they define, so
-// 'libSkiaSharp' can rename all of them and avoid colliding with a host application's own copies
-// of the same libraries. Re-run this -- and commit its output -- after the freetype2/libjpeg-turbo
-// checkout changes (ie. after a Skia DEPS bump); otherwise new symbols they introduce would be
+// Builds freetype2, libjpeg-turbo, zlib and libpng in isolation (a dedicated out dir, so the
+// normal 'libSkiaSharp' build/output is untouched) and records every global symbol they define,
+// so 'libSkiaSharp' can rename all of them and avoid colliding with a host application's own
+// copies of the same libraries. Re-run this -- and commit its output -- after any of those
+// checkouts change (ie. after a Skia DEPS bump); otherwise new symbols they introduce would be
 // missed by the rename and could still collide.
 Task("generate-wasm-symbol-renames")
     .IsDependentOn("git-sync-deps")
@@ -129,26 +130,41 @@ Task("generate-wasm-symbol-renames")
 
     GnNinja("wasm-symgen", "third_party/freetype2:freetype2", args);
     GnNinja("wasm-symgen", "third_party/libjpeg-turbo:libjpeg", args);
+    GnNinja("wasm-symgen", "third_party/zlib:zlib", args);
+    GnNinja("wasm-symgen", "third_party/libpng:libpng", args);
 
     var symgenOut = SKIA_PATH.Combine("out/wasm-symgen");
 
+    // Anchors are real functions (not macros) that are unique to each library, used to find its
+    // archive without assuming what GN names the output file for a given target.
     var freetypeArchive = FindArchiveContaining(symgenOut, "FT_Init_FreeType");
     var libjpegArchive = FindArchiveContaining(symgenOut, "jpeg_CreateDecompress");
+    var zlibArchive = FindArchiveContaining(symgenOut, "Cr_z_deflate");
+    var libpngArchive = FindArchiveContaining(symgenOut, "png_read_info");
 
+    // Note: zlib/libpng do have their own built-in symbol-prefixing mechanisms (Z_PREFIX,
+    // PNG_PREFIX), but they are deliberately not used here: Z_PREFIX only covers zlib's ~90
+    // documented public functions (internal helpers like the SIMD-specific ones are missed), and
+    // PNG_PREFIX requires hand-authoring a separate pngprefix.h with the same kind of mapping this
+    // script already generates. Renaming everything that is actually global at link time (as
+    // discovered via nm) is more complete than either, and keeps all four libraries on one
+    // uniform mechanism.
     var symbols = new SortedSet<string>();
     symbols.UnionWith(GetDefinedGlobalSymbols(freetypeArchive));
     symbols.UnionWith(GetDefinedGlobalSymbols(libjpegArchive));
+    symbols.UnionWith(GetDefinedGlobalSymbols(zlibArchive));
+    symbols.UnionWith(GetDefinedGlobalSymbols(libpngArchive));
 
     if (symbols.Count == 0)
-        throw new Exception("No symbols were discovered for freetype2/libjpeg-turbo -- something is wrong with the discovery build.");
+        throw new Exception("No symbols were discovered for freetype2/libjpeg-turbo/zlib/libpng -- something is wrong with the discovery build.");
 
     var lines = new List<string> {
         "// Generated by the 'generate-wasm-symbol-renames' cake target. DO NOT EDIT BY HAND.",
-        "// Renames every global symbol freetype2/libjpeg-turbo would otherwise export, so this",
-        "// static library cannot collide with a host application's own copies of the same",
-        "// libraries (eg. Unity's bundled libfreetype2/libjpeg) when both get statically linked",
-        "// together. Regenerate via the 'generate-wasm-symbol-renames' cake target after the",
-        "// freetype2/libjpeg-turbo checkout changes.",
+        "// Renames every global symbol freetype2/libjpeg-turbo/zlib/libpng would otherwise export,",
+        "// so this static library cannot collide with a host application's own copies of the same",
+        "// libraries (eg. Unity's bundled libfreetype2/libjpeg/zlib/libpng) when both get statically",
+        "// linked together. Regenerate via the 'generate-wasm-symbol-renames' cake target after the",
+        "// freetype2/libjpeg-turbo/zlib/libpng checkout changes.",
         "#ifndef SKIASHARP_WASM_SYMBOL_RENAMES_H",
         "#define SKIASHARP_WASM_SYMBOL_RENAMES_H",
     };
