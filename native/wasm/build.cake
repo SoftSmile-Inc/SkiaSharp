@@ -80,6 +80,11 @@ string WasmSkiaGnArgs(bool hasSimdEnabled, bool hasThreadingEnabled, bool hasWas
         $"  { (hasSimdEnabled ? ", '-msimd128'" : "") } " +
         $"  { (hasThreadingEnabled ? ", '-pthread'" : "") } " +
         $"  { (hasWasmEH ? ", '-fwasm-exceptions'" : "") } " +
+        // libpng's own PNG_USE_READ_MACROS optimization redefines png_get_uint_16/uint_32/int_32
+        // as function-like macros later in the same translation unit (png.h), which silently wins
+        // over our plain #define rename for just these three symbols -- disable it so the rename
+        // applies uniformly like it does to every other libpng/freetype2/libjpeg-turbo/zlib symbol.
+        $"  { (includeSymbolRenames ? ", '-DPNG_NO_USE_READ_MACROS'" : "") } " +
         $"  { (includeSymbolRenames ? $", '-include', '{SYMBOL_RENAMES_HEADER.FullPath}'" : "") } " +
         $"] " +
         // SIMD support is based on https://github.com/google/skia/blob/1f193df9b393d50da39570dab77a0bb5d28ec8ef/modules/canvaskit/compile.sh#L57
