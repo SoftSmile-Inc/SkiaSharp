@@ -14,9 +14,9 @@ fi
 (cd $DIR/../../../ && \
     docker run --rm --name skiasharp-wasm-symgen-$EMSCRIPTEN_VERSION --volume $(pwd):/work skiasharp-wasm:$EMSCRIPTEN_VERSION /bin/bash -c "\
         dotnet tool restore ; \
-        dotnet cake native/wasm/build.cake --target=generate-wasm-symbol-renames")
+        dotnet cake native/wasm/build.cake --target=generate-wasm-symbol-renames --wasmRenameThirdPartySymbols=true")
 
-# review and commit native/wasm/libSkiaSharp/wasm_symbol_renames.h, then build with:
-#   ./scripts/Docker/wasm/build-local.sh $EMSCRIPTEN_VERSION
-# (add --wasmRenameThirdPartySymbols=true to the "dotnet cake" line in build-local.sh, or
-#  run the equivalent externals-wasm command by hand with that flag appended)
+# 'libSkiaSharp' now regenerates native/wasm/libSkiaSharp/wasm_symbol_renames.h automatically
+# whenever --wasmRenameThirdPartySymbols=true is passed to build-local.sh, so this script is not a
+# required step before building -- it only exists to preview/inspect the header on its own,
+# without also running the full libSkiaSharp build. There is no need to commit its output.

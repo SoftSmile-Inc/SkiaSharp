@@ -2,8 +2,8 @@
 // Renames every global symbol freetype2/libjpeg-turbo/zlib/libpng would otherwise export,
 // so this static library cannot collide with a host application's own copies of the same
 // libraries (eg. Unity's bundled libfreetype2/libjpeg/zlib/libpng) when both get statically
-// linked together. Regenerate via the 'generate-wasm-symbol-renames' cake target after the
-// freetype2/libjpeg-turbo/zlib/libpng checkout changes.
+// linked together. Regenerated automatically on every build with --wasmRenameThirdPartySymbols
+// enabled -- do not rely on the copy checked into source control being current.
 #ifndef SKIASHARP_WASM_SYMBOL_RENAMES_H
 #define SKIASHARP_WASM_SYMBOL_RENAMES_H
 #define af_adlm_dflt_style_class sksharp_af_adlm_dflt_style_class
