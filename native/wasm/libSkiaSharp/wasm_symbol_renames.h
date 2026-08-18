@@ -6,6 +6,7 @@
 // enabled -- do not rely on the copy checked into source control being current.
 #ifndef SKIASHARP_WASM_SYMBOL_RENAMES_H
 #define SKIASHARP_WASM_SYMBOL_RENAMES_H
+#define __c_longjmp sksharp___c_longjmp
 #define af_adlm_dflt_style_class sksharp_af_adlm_dflt_style_class
 #define af_adlm_nonbase_uniranges sksharp_af_adlm_nonbase_uniranges
 #define af_adlm_script_class sksharp_af_adlm_script_class
