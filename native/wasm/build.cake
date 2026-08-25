@@ -40,6 +40,17 @@ string COMPILERS = $"cc='{CC}' cxx='{CXX}' ar='{AR}' ";
 string SYMBOL_RENAME_PREFIX = "sksharp_";
 FilePath SYMBOL_RENAMES_HEADER = MakeAbsolute(ROOT_PATH.CombineWithFilePath("native/wasm/libSkiaSharp/wasm_symbol_renames.h"));
 
+// HarfBuzz's own public hb_* API is renamed the same way (see 'generate-wasm-harfbuzz-symbol-
+// renames' below) -- but unlike freetype2/libjpeg-turbo/zlib/libpng, that API is also what the managed
+// HarfBuzzSharp binding P/Invokes directly, so the renamed names need aliasing back. See
+// documentation/wasm-symbol-renaming.md for the full rationale.
+FilePath HARFBUZZ_SYMBOL_RENAMES_HEADER = MakeAbsolute(ROOT_PATH.CombineWithFilePath("native/wasm/libHarfBuzzSharp/wasm_symbol_renames.h"));
+FilePath HARFBUZZ_HB_EXTERN_VISIBILITY_HEADER = MakeAbsolute(ROOT_PATH.CombineWithFilePath("native/wasm/libHarfBuzzSharp/wasm_hb_extern_visibility.h"));
+// Force-included, not a separately-compiled source file: __attribute__((alias(...))) requires its
+// target defined in the *same* translation unit, which harfbuzz-subset.cc's single-TU amalgamation
+// provides -- see the -include order in HarfBuzzSharpGnArgs below.
+FilePath HARFBUZZ_SYMBOL_ALIASES_HEADER = MakeAbsolute(ROOT_PATH.CombineWithFilePath("native/wasm/libHarfBuzzSharp/wasm_symbol_aliases.h"));
+
 string WasmSkiaGnArgs(bool hasSimdEnabled, bool hasThreadingEnabled, bool hasWasmEH, bool includeSymbolRenames)
 {
     return
@@ -92,6 +103,85 @@ string WasmSkiaGnArgs(bool hasSimdEnabled, bool hasThreadingEnabled, bool hasWas
         $"skia_emsdk_dir='{EMSCRIPTEN_ROOT}'" +
         COMPILERS +
         ADDITIONAL_GN_ARGS;
+}
+
+// harfbuzz needs a heavier mechanism than freetype2/libjpeg-turbo/libpng above: it's mostly C++-mangled
+// (textual #define renaming can't reach mangled names), and its public hb_* API is also SkiaSharp.HarfBuzz's P/Invoke surface.
+// The fix combines '-fvisibility=hidden' (hides internals),
+// HARFBUZZ_HB_EXTERN_VISIBILITY_HEADER (keeps the public API exported despite that),
+// and HARFBUZZ_SYMBOL_RENAMES_HEADER + HARFBUZZ_SYMBOL_ALIASES_HEADER (renames the public API, then aliases the P/Invoke'd subset back to its original name).
+// See documentation/wasm-symbol-renaming.md for the full picture.
+string HarfBuzzSharpGnArgs(bool hasSimdEnabled, bool hasThreadingEnabled, bool hasWasmEH, bool hideInternalSymbols, bool includeGeneratedRenames)
+{
+    return
+        $"target_os='linux' " +
+        $"target_cpu='wasm' " +
+        $"is_static_skiasharp=true " +
+        $"visibility_hidden={(hideInternalSymbols ? "true" : "false")} " +
+        $"extra_cflags=[ '-s', 'WARN_UNALIGNED=1' " +
+        $"  { (hasSimdEnabled ? ", '-msimd128'" : "") } " +
+        $"  { (hasThreadingEnabled ? ", '-pthread'" : "") } " +
+        $"  { (hasWasmEH ? ", '-fwasm-exceptions'" : "") } " +
+        $"  { (hideInternalSymbols ? $", '-include', '{HARFBUZZ_HB_EXTERN_VISIBILITY_HEADER.FullPath}'" : "") } " +
+        // Order matters: the alias declarations must be force-included *before* the renames
+        // header, while 'hb_x' still means literally 'hb_x' -- otherwise the renames header's
+        // '#define hb_x sksharp_hb_x' would also rewrite these declarations' own names.
+        $"  { (includeGeneratedRenames ? $", '-include', '{HARFBUZZ_SYMBOL_ALIASES_HEADER.FullPath}'" : "") } " +
+        $"  { (includeGeneratedRenames ? $", '-include', '{HARFBUZZ_SYMBOL_RENAMES_HEADER.FullPath}'" : "") } " +
+        $"] " +
+        $"extra_cflags_cc=[ '-frtti' { (hasSimdEnabled ? ", '-msimd128'" : "") } { (hasThreadingEnabled ? ", '-pthread'" : "") } { (hasWasmEH ? ", '-fwasm-exceptions'" : "") } ] " +
+        $"skia_emsdk_dir='{EMSCRIPTEN_ROOT}'" +
+        COMPILERS +
+        ADDITIONAL_GN_ARGS;
+}
+
+// The harfbuzz function names the managed HarfBuzzSharp binding P/Invokes directly (eg.
+// 'hb_blob_create') -- derived from the DllImport/LibraryImport declarations themselves (not
+// hand-maintained), so it always matches whatever the binding actually calls. Used to decide
+// which renamed harfbuzz symbols need an alias back to their original name.
+SortedSet<string> GetHarfBuzzManagedApiNames()
+{
+    var files = new[] {
+        ROOT_PATH.CombineWithFilePath("binding/HarfBuzzSharp/HarfBuzzApi.cs"),
+        ROOT_PATH.CombineWithFilePath("binding/HarfBuzzSharp/HarfBuzzApi.generated.cs"),
+    };
+    // Matches a bare 'hb_...' identifier immediately followed by '(' -- covers DllImport/
+    // LibraryImport extern declarations, the USE_DELEGATES delegate type declarations, and (
+    // harmlessly, since it is the same name) the '// extern ...' doc comment above each one.
+    // Excludes '// typedef hb_bool_t (*)(...)'-style function-pointer doc comments, whose
+    // '(' belongs to the pointer syntax, not a call -- those would otherwise wrongly pick up
+    // the *return type* (eg. 'hb_bool_t') as if it were a function name.
+    var regex = new System.Text.RegularExpressions.Regex(@"\bhb_[A-Za-z0-9_]*\b(?=\s*\()");
+    var names = new SortedSet<string>();
+    foreach (var file in files) {
+        foreach (var line in System.IO.File.ReadAllLines(file.FullPath)) {
+            if (line.TrimStart().StartsWith("// typedef"))
+                continue;
+            foreach (System.Text.RegularExpressions.Match m in regex.Matches(line))
+                names.Add(m.Value);
+        }
+    }
+    return names;
+}
+
+// harfbuzz sometimes wraps a definition's name in parens (eg. '(hb_color_get_alpha) (...)') to
+// stop its own inline function-like macro from firing at the definition site -- but that also
+// defeats our rename macro there, producing a renamed prototype but an unrenamed definition that
+// fails to compile under -Wmissing-prototypes. Detected generically by scanning harfbuzz's own
+// sources for that idiom; names found here are simply left out of the rename table (both sides
+// then agree on the real name). See documentation/wasm-symbol-renaming.md for the full story.
+SortedSet<string> GetHarfBuzzMacroShadowedNames()
+{
+    var regex = new System.Text.RegularExpressions.Regex(@"^\((hb_[A-Za-z0-9_]+)\)\s*\(", System.Text.RegularExpressions.RegexOptions.Multiline);
+    var names = new SortedSet<string>();
+    var srcDir = SKIA_PATH.Combine("third_party/externals/harfbuzz/src");
+    var files = GetFiles($"{srcDir}/*.cc").Concat(GetFiles($"{srcDir}/*.h")).Concat(GetFiles($"{srcDir}/*.hh"));
+    foreach (var file in files) {
+        var text = System.IO.File.ReadAllText(file.FullPath);
+        foreach (System.Text.RegularExpressions.Match m in regex.Matches(text))
+            names.Add(m.Groups[1].Value);
+    }
+    return names;
 }
 
 // Reads an archive's global, defined symbols -- ie. the ones that would participate in a
@@ -235,29 +325,92 @@ Task("libSkiaSharp")
     CopyFileToDirectory(a, outDir);
 });
 
+// Builds the real 'HarfBuzzSharp' target (harfbuzz-subset.cc amalgamates almost the entire
+// harfbuzz source into it directly -- there's no separate third_party/harfbuzz dependency) into a
+// dedicated out dir with internals hidden, then discovers its public API the same way
+// 'generate-wasm-symbol-renames' does for the four C libraries. See documentation/wasm-symbol-renaming.md.
+Task("generate-wasm-harfbuzz-symbol-renames")
+    .IsDependentOn("git-sync-deps")
+    .WithCriteria(IsRunningOnLinux() && ENABLE_SYMBOL_RENAMES)
+    .Does(() =>
+{
+    var args = HarfBuzzSharpGnArgs(HAS_SIMD_ENABLED, HAS_THREADING_ENABLED, HAS_WASM_EH, hideInternalSymbols: true, includeGeneratedRenames: false);
+
+    GnNinja("wasm-symgen-harfbuzz", "HarfBuzzSharp", args);
+
+    var archive = SKIA_PATH.CombineWithFilePath("out/wasm-symgen-harfbuzz/libHarfBuzzSharp.a");
+    var symbols = new SortedSet<string>(GetDefinedGlobalSymbols(archive));
+
+    if (symbols.Count == 0)
+        throw new Exception("No symbols were discovered for harfbuzz -- something is wrong with the discovery build.");
+
+    // See GetHarfBuzzMacroShadowedNames -- these can't be renamed by textual substitution, so
+    // leave them out of the rename table; both sides then agree on the real name.
+    var macroShadowedNames = GetHarfBuzzMacroShadowedNames();
+    var renamedSymbols = new SortedSet<string>(symbols.Except(macroShadowedNames));
+    var unrenameable = new SortedSet<string>(symbols.Intersect(macroShadowedNames));
+    if (unrenameable.Count > 0)
+        Warning($"{unrenameable.Count} harfbuzz function(s) can't be renamed (shadowed by harfbuzz's own inline macro at their definition site) and will keep their original name, unlike the rest of harfbuzz's public API: {string.Join(", ", unrenameable)}");
+
+    // The managed binding P/Invokes these hb_* names directly, so 'wasm_symbol_aliases.h'
+    // re-exports each renamed one under its original name (see HarfBuzzSharpGnArgs). Names in
+    // 'unrenameable' are skipped -- they were never renamed, so no alias is needed.
+    var managedApiNames = GetHarfBuzzManagedApiNames();
+    var aliasNames = new SortedSet<string>(managedApiNames.Where(n => renamedSymbols.Contains(n)));
+
+    var missing = managedApiNames.Where(n => !symbols.Contains(n)).ToList();
+    if (missing.Count > 0)
+        Warning($"{missing.Count} harfbuzz function(s) referenced by the managed HarfBuzzSharp binding were not found in this build's public API (eg. disabled by a feature define) and will not be renamed/aliased: {string.Join(", ", missing)}");
+
+    var renameLines = new List<string> {
+        "// Generated by the 'generate-wasm-harfbuzz-symbol-renames' cake target. DO NOT EDIT BY HAND.",
+        "// Renames every global symbol harfbuzz's public API exports, to avoid colliding with a",
+        "// host application's own bundled harfbuzz. See documentation/wasm-symbol-renaming.md.",
+        "// Regenerated on every build with --wasmRenameThirdPartySymbols enabled.",
+        "#ifndef SKIASHARP_WASM_HARFBUZZ_SYMBOL_RENAMES_H",
+        "#define SKIASHARP_WASM_HARFBUZZ_SYMBOL_RENAMES_H",
+    };
+    foreach (var symbol in renamedSymbols)
+        renameLines.Add($"#define {symbol} {SYMBOL_RENAME_PREFIX}{symbol}");
+    renameLines.Add("#endif");
+
+    EnsureDirectoryExists(HARFBUZZ_SYMBOL_RENAMES_HEADER.GetDirectory());
+    System.IO.File.WriteAllLines(HARFBUZZ_SYMBOL_RENAMES_HEADER.FullPath, renameLines);
+
+    var aliasLines = new List<string> {
+        "// Generated by the 'generate-wasm-harfbuzz-symbol-renames' cake target. DO NOT EDIT BY HAND.",
+        "// Re-exports each renamed harfbuzz function the managed HarfBuzzSharp binding P/Invokes,",
+        "// under its original name. See documentation/wasm-symbol-renaming.md.",
+        "#ifndef SKIASHARP_WASM_HARFBUZZ_SYMBOL_ALIASES_H",
+        "#define SKIASHARP_WASM_HARFBUZZ_SYMBOL_ALIASES_H",
+    };
+    foreach (var symbol in aliasNames)
+        aliasLines.Add($"extern __attribute__((visibility(\"default\"))) void {symbol}(void) __attribute__((alias(\"{SYMBOL_RENAME_PREFIX}{symbol}\")));");
+    aliasLines.Add("#endif");
+
+    EnsureDirectoryExists(HARFBUZZ_SYMBOL_ALIASES_HEADER.GetDirectory());
+    System.IO.File.WriteAllLines(HARFBUZZ_SYMBOL_ALIASES_HEADER.FullPath, aliasLines);
+
+    Information($"Wrote {renamedSymbols.Count} harfbuzz symbol renames ({unrenameable.Count} left un-renamed) to '{HARFBUZZ_SYMBOL_RENAMES_HEADER}' and {aliasNames.Count} aliases to '{HARFBUZZ_SYMBOL_ALIASES_HEADER}'.");
+});
+
 Task("libHarfBuzzSharp")
+    .IsDependentOn("generate-wasm-harfbuzz-symbol-renames")
     .WithCriteria(IsRunningOnLinux())
     .Does(() =>
 {
-    bool hasSimdEnabled = EMSCRIPTEN_FEATURES.Contains("simd") || EMSCRIPTEN_FEATURES.Contains("_simd");
-    bool hasThreadingEnabled = EMSCRIPTEN_FEATURES.Contains("mt");
-    bool hasWasmEH = EMSCRIPTEN_FEATURES.Contains("_wasmeh");
-
-    var emscriptenFeaturesModifiers = 
+    var emscriptenFeaturesModifiers =
         EMSCRIPTEN_FEATURES
         .Where(f => !f.StartsWith("_"))
         .ToArray();
 
-    GnNinja($"wasm", "HarfBuzzSharp",
-        $"target_os='linux' " +
-        $"target_cpu='wasm' " +
-        $"is_static_skiasharp=true " +
-        $"visibility_hidden=false " +
-        $"extra_cflags=[ '-s', 'WARN_UNALIGNED=1' { (hasSimdEnabled ? ", '-msimd128'" : "") } { (hasThreadingEnabled ? ", '-pthread'" : "") } { (hasWasmEH ? ", '-fwasm-exceptions'" : "") } ] " +
-        $"extra_cflags_cc=[ '-frtti' { (hasSimdEnabled ? ", '-msimd128'" : "") } { (hasThreadingEnabled ? ", '-pthread'" : "") } { (hasWasmEH ? ", '-fwasm-exceptions'" : "") } ] " +
-        $"skia_emsdk_dir='{EMSCRIPTEN_ROOT}'" +
-        COMPILERS +
-        ADDITIONAL_GN_ARGS);
+    // The alias declarations (see 'generate-wasm-harfbuzz-symbol-renames') are force-included
+    // directly into this same GN/ninja build via HarfBuzzSharpGnArgs -- no separate compile/merge
+    // step needed; __attribute__((alias(...))) requires same-translation-unit resolution, which
+    // is exactly what force-including achieves.
+    GnNinja($"wasm", "HarfBuzzSharp", HarfBuzzSharpGnArgs(HAS_SIMD_ENABLED, HAS_THREADING_ENABLED, HAS_WASM_EH, hideInternalSymbols: ENABLE_SYMBOL_RENAMES, includeGeneratedRenames: ENABLE_SYMBOL_RENAMES));
+
+    var so = SKIA_PATH.CombineWithFilePath($"out/wasm/libHarfBuzzSharp.a");
 
     var outDir = OUTPUT_PATH.Combine($"wasm");
     if (!string.IsNullOrEmpty(EMSCRIPTEN_VERSION))
@@ -265,7 +418,6 @@ Task("libHarfBuzzSharp")
     if (emscriptenFeaturesModifiers.Length != 0)
         outDir = outDir.Combine(string.Join(",", emscriptenFeaturesModifiers));
     EnsureDirectoryExists(outDir);
-    var so = SKIA_PATH.CombineWithFilePath($"out/wasm/libHarfBuzzSharp.a");
     CopyFileToDirectory(so, outDir);
     CopyFile(so, outDir.CombineWithFilePath("libHarfBuzzSharp.a"));
 });
