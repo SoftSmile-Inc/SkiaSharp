@@ -8,6 +8,8 @@ namespace HarfBuzzSharp
 	{
 #if __IOS__ || __TVOS__
 		private const string HARFBUZZ = "@rpath/libHarfBuzzSharp.framework/libHarfBuzzSharp";
+#elif SKIASHARP_UNITY_WEBGL_INTERNAL
+		private const string HARFBUZZ = "__Internal";
 #else
 		private const string HARFBUZZ = "libHarfBuzzSharp";
 #endif
