@@ -9,7 +9,7 @@ An opt-in build-time mechanism that avoids duplicate-symbol linker errors when t
   - harfbuzz needs a second mechanism on top of this, because it's C++ (mostly unreachable by textual renaming) and because its public API — unlike freetype2/libjpeg-turbo/libpng — is also what the managed `HarfBuzzSharp` binding P/Invokes directly. See [§5](#5-harfbuzz-hiding--aliasing-instead-of-a-plain-rename).
   - **Known gap, confirmed in production:** harfbuzz's C++ internals (template instantiations, constructors/destructors, other vague-linkage symbols) are *not* actually renamed or hidden by this mechanism, despite §5's original claim to the contrary. This has been reproduced against a real Unity WebGL host and traced to a root cause with no clean fix found yet. See [§6](#6-known-gap-harfbuzzs-c-internals-are-not-actually-protected).
 - **Off by default** — standard SkiaSharp wasm builds (and every wasm job in the current CI matrix) are unaffected.
-- Relevant files: `native/wasm/build.cake`, `native/wasm/libSkiaSharp/wasm_symbol_renames.h` (generated), `native/wasm/libHarfBuzzSharp/wasm_symbol_renames.h` (generated), `native/wasm/libHarfBuzzSharp/wasm_hb_extern_visibility.h`, `native/wasm/libHarfBuzzSharp/wasm_symbol_aliases.h` (generated), `scripts/Docker/wasm/build-local.sh`, `scripts/Docker/wasm/generate-symbol-renames-local.sh`.
+- Relevant files: `native/wasm/build.cake`, `native/wasm/libSkiaSharp/wasm_symbol_renames.h` (generated), `native/wasm/libHarfBuzzSharp/wasm_symbol_renames.h` (generated), `native/wasm/libHarfBuzzSharp/wasm_hb_extern_visibility.h`, `native/wasm/libHarfBuzzSharp/wasm_symbol_aliases.h` (generated), `scripts/Docker/wasm/build-local.sh`.
 
 ## 1. The problem being solved
 
@@ -53,14 +53,6 @@ With a specific feature combination — the discovery build automatically matche
 ```bash
 ./scripts/Docker/wasm/build-local.sh 3.1.34 --wasmRenameThirdPartySymbols=true --emscriptenFeatures=_wasmeh,mt,simd
 ```
-
-To inspect the generated header on its own, without running the full `libSkiaSharp` build:
-
-```bash
-./scripts/Docker/wasm/generate-symbol-renames-local.sh 3.1.34
-```
-
-(this internally passes `--wasmRenameThirdPartySymbols=true` so the task's criteria is met; it writes `native/wasm/libSkiaSharp/wasm_symbol_renames.h`)
 
 ## 4. Usage: harfbuzz on its own
 
@@ -311,8 +303,6 @@ None of these have been implemented; each is a legitimate direction depending on
 - **zlib has been removed from this mechanism.** It was previously included alongside freetype2/libjpeg-turbo/libpng ("kept for completeness/uniformity, not because a real gap was found"), but the vendored zlib fork already renames essentially everything (151 `#define`s in `chromeconf.h`, including internal helpers) to `Cr_z_*`, which prevents collisions with a host app's own *plain* zlib on its own — the extra `sksharp_Cr_z_*` layer would only have helped in the narrow case where the host also bundles a Chromium-forked zlib. That was confirmed empirically to be inert against the motivating production build (a real Unity WebGL project bundles plain `zlib`/`inflate`, not a Chromium fork — zero `Cr_z_*` names found), so it was dropped: `generate-wasm-symbol-renames` (`native/wasm/build.cake`) no longer builds or discovers zlib symbols, and `wasm_symbol_renames.h` no longer contains `Cr_z_*` renames. See [§1](#1-the-problem-being-solved).
 - **Discovery-build efficiency.** `generate-wasm-symbol-renames` runs a full `gn gen` once per library (4×, with identical args) instead of once for all four, and re-runs `nm` on every archive in the output directory multiple times (once per library while searching, then again to collect its final symbol set) instead of caching per-archive results. Correct, but does more work than necessary — not addressed as part of this change since it only affects the (opt-in, infrequent) build time, not correctness.
 - **`out/wasm-symgen` is never cleaned** between runs, unlike the main `libSkiaSharp` task's merge directory. Unlikely to matter for a single clean checkout, but stale artifacts from a previous local run could in principle affect archive discovery.
-- **Shell script duplication.** `scripts/Docker/wasm/build-local.sh` and `scripts/Docker/wasm/generate-symbol-renames-local.sh` share nearly all of their Docker build/run logic; only the final `dotnet cake` line differs. Not consolidated as part of this change.
-- **Git tracking of the generated header is still undecided.** `native/wasm/libSkiaSharp/wasm_symbol_renames.h` (and, now, the two generated harfbuzz files) remain tracked files. Since they are rewritten by every build that enables renaming, local builds will show them as modified even when their content is materially unchanged. Whether to keep committing them (for human review of what changes after a DEPS bump) or move them to an untracked build-output path has not been decided.
 - **The harfbuzz alias mechanism's P/Invoke surface has since been verified against a real Unity project.** `libHarfBuzzSharp.a` compiles and links cleanly with a real emsdk/GN/ninja toolchain (see §5), and the aliased `hb_*` exports do resolve correctly through Unity's IL2CPP WebGL build and get called successfully from C#. **What remains unverified/broken is the C++-internals gap** — see [§6](#6-known-gap-harfbuzzs-c-internals-are-not-actually-protected) for the full, since-confirmed picture; it is materially worse than "unverified," it's a confirmed live collision surface currently masked by dead-code elimination rather than closed.
 - **`wasm_symbol_aliases.h` depends on `HarfBuzzSharp` staying a single translation unit.** It works today because `harfbuzz-subset.cc` is the only source file in that GN target (`__attribute__((alias(...)))` requires same-TU resolution — see §5). If a future harfbuzz version splits that amalgamation across multiple `.cc` files, this would need reworking; it would fail loudly (a compile error) rather than silently produce a broken archive.
 - **`-fvisibility=hidden` doesn't reach every kind of symbol — see [§6](#6-known-gap-harfbuzzs-c-internals-are-not-actually-protected).** This was originally logged here as an unaudited, "lower-risk" theoretical gap limited to RTTI/vtable weak symbols. It has since been audited: the gap is broader (ordinary template instantiations and constructors/destructors, not just RTTI/vtables), includes *strong*-linkage symbols that do produce hard duplicate-symbol errors (not just weak ones the linker silently resolves), and has been reproduced against a real host project.
