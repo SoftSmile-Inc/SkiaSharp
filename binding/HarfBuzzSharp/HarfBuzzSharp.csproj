@@ -15,6 +15,12 @@
   <PropertyGroup Condition="$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net7.0'))">
     <DefineConstants>$(DefineConstants);USE_LIBRARY_IMPORT</DefineConstants>
   </PropertyGroup>
+  <!-- Opt-in: build with `-p:SkiaSharpUnityWebGLInternal=true` to produce a variant whose
+       P/Invokes use the "__Internal" module name, for Unity's WebGL (IL2CPP/Mono) backend.
+       See documentation/unity-webgl-internal-pinvoke.md. -->
+  <PropertyGroup Condition="'$(SkiaSharpUnityWebGLInternal)' == 'true'">
+    <DefineConstants>$(DefineConstants);SKIASHARP_UNITY_WEBGL_INTERNAL</DefineConstants>
+  </PropertyGroup>
   <ItemGroup Condition="'$(BuildingInsideVisualStudio)' != 'true'">
     <ProjectReference Include="..\HarfBuzzSharp.NativeAssets.Android\HarfBuzzSharp.NativeAssets.Android.csproj" Condition="$(TargetFramework.Contains('-android'))" />
     <ProjectReference Include="..\HarfBuzzSharp.NativeAssets.iOS\HarfBuzzSharp.NativeAssets.iOS.csproj" Condition="$(TargetFramework.Contains('-ios'))" />
