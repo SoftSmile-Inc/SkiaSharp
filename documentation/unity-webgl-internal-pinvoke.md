@@ -42,22 +42,21 @@ property that the project's own `<DefineConstants>$(DefineConstants);...`
 assignments (including the one that sets `USE_LIBRARY_IMPORT`) can no longer
 append to, silently dropping them and breaking the build.
 
-Build the Unity-WebGL variant of each assembly directly from this repo:
+Build the Unity-WebGL variant of each assembly directly from this repo,
+targeting **`netstandard2.1`** — not `net8.0` (see "Which TargetFramework"
+below):
 
 ```sh
 dotnet build binding/SkiaSharp/SkiaSharp.csproj \
-  -f net8.0 -c Release \
+  -f netstandard2.1 -c Release \
   -p:SkiaSharpUnityWebGLInternal=true \
   -o artifacts/unity-webgl/SkiaSharp
 
 dotnet build binding/HarfBuzzSharp/HarfBuzzSharp.csproj \
-  -f net8.0 -c Release \
+  -f netstandard2.1 -c Release \
   -p:SkiaSharpUnityWebGLInternal=true \
   -o artifacts/unity-webgl/HarfBuzzSharp
 ```
-
-Adjust `-f` to whichever `TargetFramework` you currently ship into Unity
-(e.g. `netstandard2.1`) if it differs from `net8.0`.
 
 ## Installing into a Unity project
 
