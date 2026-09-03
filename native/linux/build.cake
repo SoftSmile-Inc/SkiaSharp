@@ -155,7 +155,7 @@ Task("libHarfBuzzSharp")
             $"visibility_hidden=false " +
             $"extra_asmflags=[] " +
             $"extra_cflags=[] " +
-            $"extra_ldflags=[ '-static-libstdc++', '-static-libgcc', '-Wl,--version-script={map}' ] " +
+            $"extra_ldflags=[ '-static-libstdc++', '-static-libgcc', '-Wl,--version-script={map}', '-Wl,-Bsymbolic-functions' ] " +
             COMPILERS +
             $"linux_soname_version='{soname}' " +
             ADDITIONAL_GN_ARGS);
