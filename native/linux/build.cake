@@ -91,7 +91,7 @@ Task("libSkiaSharp")
         // Bionic (Android NDK) builds need SK_BUILD_FOR_UNIX to prevent the
         // NDK's __ANDROID__ define from suppressing SkDebugf (stdio port).
         // Fontconfig is not available on Bionic.
-        // The Android NDK ships libc++ as both static and shared â€” without
+        // The Android NDK ships libc++ as both static and shared — without
         // -static-libstdc++ clang would pick libc++_shared.so as a runtime dep
         // that we don't bundle. The .NET glibc/musl cross-images ship libc++
         // static-only, so this flag is a no-op there but doesn't hurt.
@@ -155,7 +155,7 @@ Task("libHarfBuzzSharp")
             $"visibility_hidden=false " +
             $"extra_asmflags=[] " +
             $"extra_cflags=[ '-stdlib=libc++'{bionicDefineHB} ] " +
-            $"extra_ldflags=[ '-stdlib=libc++', '-static-libgcc'{staticLibcxxHB}, '-Wl,--version-script={map}' ] " +
+            $"extra_ldflags=[ '-stdlib=libc++', '-static-libgcc'{staticLibcxxHB}, '-Wl,--version-script={map}', '-Wl,-Bsymbolic-functions' ] " +
             COMPILERS +
             $"linux_soname_version='{soname}' " +
             ADDITIONAL_GN_ARGS);

@@ -58,6 +58,7 @@ C# Wrapper (binding/SkiaSharp/)  →  P/Invoke  →  C API (externals/skia/src/c
 | [dependencies.md](dependencies.md) | Native dependencies: security relevance, CVE tracking, cgmanifest.json |
 | [debugging-methodology.md](debugging-methodology.md) | Best practices for complex debugging |
 | [wasm-symbol-renaming.md](wasm-symbol-renaming.md) | Avoiding duplicate-symbol collisions in wasm static linking |
+| [linux-harfbuzz-symbol-interposition.md](linux-harfbuzz-symbol-interposition.md) | Avoiding `hb_*` symbol interposition with a host's own bundled harfbuzz on Linux |
 
 
 ## Quick Build
