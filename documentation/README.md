@@ -47,6 +47,7 @@ C# Wrapper (binding/SkiaSharp/)  →  P/Invoke  →  C API (externals/skia/src/c
 |----------|-------------|
 | [linux-assets.md](linux-assets.md) | Linux native package information |
 | [wasm-symbol-renaming.md](wasm-symbol-renaming.md) | Avoiding duplicate-symbol collisions in wasm static linking |
+| [linux-harfbuzz-symbol-interposition.md](linux-harfbuzz-symbol-interposition.md) | Avoiding `hb_*` symbol interposition with a host's own bundled harfbuzz on Linux |
 
 ## Quick Build
 
