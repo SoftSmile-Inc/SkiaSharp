@@ -48,6 +48,14 @@ C# Wrapper (binding/SkiaSharp/)  →  P/Invoke  →  C API (externals/skia/src/c
 | [linux-assets.md](linux-assets.md) | Linux native package information |
 | [wasm-symbol-renaming.md](wasm-symbol-renaming.md) | Avoiding duplicate-symbol collisions in wasm static linking |
 | [linux-harfbuzz-symbol-interposition.md](linux-harfbuzz-symbol-interposition.md) | Avoiding `hb_*` symbol interposition with a host's own bundled harfbuzz on Linux |
+| [unity-webgl-internal-pinvoke.md](unity-webgl-internal-pinvoke.md) | Building the managed assemblies with `__Internal` P/Invokes for Unity WebGL |
+
+### SoftSmile Fork
+| Document | Description |
+|----------|-------------|
+| [ci/native-build-spec.md](ci/native-build-spec.md) | How the fork builds artefacts for the Unity project and how they get there |
+| [ci/open-questions.md](ci/open-questions.md) | Questions raised while agreeing the spec, with what was already established |
+| [adr/](adr/) | Decision records for the fork |
 
 ## Quick Build
 
