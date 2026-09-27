@@ -45,8 +45,6 @@ on:
   push:
     tags:
       - 'v*-ss.*'
-    branches: ['ci/native-build'] # TEMP-DEBUG
-    paths-ignore: ['documentation/**', '**.md'] # TEMP-DEBUG: path filters never apply to tag pushes
 
 permissions:
   contents: read
@@ -177,7 +175,6 @@ jobs:
   wasm:
     name: wasm (libSkiaSharp.a, libHarfBuzzSharp.a)
     needs: prepare
-    if: ${{ !contains(github.event.head_commit.message, '[wasm:skip]') }} # TEMP-DEBUG
     runs-on: ubuntu-latest
     timeout-minutes: 300
     permissions: # TEMP-DEBUG
