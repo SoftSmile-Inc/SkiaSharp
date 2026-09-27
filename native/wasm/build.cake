@@ -383,9 +383,17 @@ Task("generate-wasm-harfbuzz-symbol-renames")
         "// under its original name. See documentation/wasm-symbol-renaming.md.",
         "#ifndef SKIASHARP_WASM_HARFBUZZ_SYMBOL_ALIASES_H",
         "#define SKIASHARP_WASM_HARFBUZZ_SYMBOL_ALIASES_H",
+        // harfbuzz-subset.cc is C++: without C linkage each alias would be exported mangled
+        // (eg. '_Z14hb_blob_createv'), not under the name the P/Invoke looks for.
+        "#ifdef __cplusplus",
+        "extern \"C\" {",
+        "#endif",
     };
     foreach (var symbol in aliasNames)
         aliasLines.Add($"extern __attribute__((visibility(\"default\"))) void {symbol}(void) __attribute__((alias(\"{SYMBOL_RENAME_PREFIX}{symbol}\")));");
+    aliasLines.Add("#ifdef __cplusplus");
+    aliasLines.Add("}");
+    aliasLines.Add("#endif");
     aliasLines.Add("#endif");
 
     EnsureDirectoryExists(HARFBUZZ_SYMBOL_ALIASES_HEADER.GetDirectory());
