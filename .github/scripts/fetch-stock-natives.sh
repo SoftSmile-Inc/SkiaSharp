@@ -38,13 +38,12 @@ fetch() {
         -o "$tmp/pkg.nupkg"
 
     mkdir -p "$OUT/$(dirname "$slot")"
-    # unzip -p writes to stdout, so a missing entry yields an empty file rather
-    # than an error -- hence the explicit size check below.
-    unzip -p "$tmp/pkg.nupkg" "$src" > "$OUT/$slot"
-    [ -s "$OUT/$slot" ] || {
+    # unzip exits non-zero on a missing entry; an empty entry is caught by the
+    # size check. Either way, say which package and entry.
+    if ! unzip -p "$tmp/pkg.nupkg" "$src" > "$OUT/$slot" || [ ! -s "$OUT/$slot" ]; then
         echo "empty or missing entry '$src' in ${id}/${version}" >&2
         exit 1
-    }
+    fi
 
     printf '%-42s <- %s/%s!%s\n' "$slot" "$id" "$version" "$src"
 }

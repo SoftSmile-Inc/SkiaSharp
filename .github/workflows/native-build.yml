@@ -8,6 +8,12 @@ name: Native build
 #
 # There is deliberately no pull_request trigger: this is a public fork, and
 # nothing here should run on code from an outside contributor.
+#
+# Two trees are in play. The target ref (prepare resolves it to one commit,
+# which every job builds) is whatever the operator asked for -- typically a
+# release branch that does not carry this CI. The CI tooling
+# (.github/scripts, documentation/ci) always comes from the commit this
+# workflow file was taken from, checked out into .ci/.
 
 on:
   workflow_dispatch:
@@ -31,9 +37,16 @@ on:
         required: false
         type: string
         default: '6000.3.8f1'
+      reuse_wasm_run_id: # TEMP-DEBUG
+        description: 'DEBUG: take slots-wasm from this earlier run instead of building' # TEMP-DEBUG
+        required: false # TEMP-DEBUG
+        type: string # TEMP-DEBUG
+        default: '' # TEMP-DEBUG
   push:
     tags:
       - 'v*-ss.*'
+    branches: ['ci/native-build'] # TEMP-DEBUG
+    paths-ignore: ['documentation/**', '**.md'] # TEMP-DEBUG: path filters never apply to tag pushes
 
 permissions:
   contents: read
@@ -47,8 +60,10 @@ jobs:
   prepare:
     name: Resolve versions
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       ref: ${{ steps.resolve.outputs.ref }}
+      sha: ${{ steps.resolve.outputs.sha }}
       bundle_version: ${{ steps.resolve.outputs.bundle_version }}
       is_release: ${{ steps.resolve.outputs.is_release }}
       emscripten_version: ${{ steps.resolve.outputs.emscripten_version }}
@@ -58,8 +73,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ inputs.ref || github.sha }}
           submodules: false
+          persist-credentials: false
 
       - id: resolve
         env:
@@ -71,30 +87,60 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Inputs are empty on a tag push, so fall back to the same defaults.
+          # Inputs are empty on a push, so fall back to the same defaults.
+          # cake lowercases both values before using them, so do the same.
           emscripten="${INPUT_EMSCRIPTEN:-3.1.39}"
           features="${INPUT_FEATURES:-_wasmeh,st,simd}"
           unity="${INPUT_UNITY:-6000.3.8f1}"
+          emscripten="${emscripten,,}"
+          features="${features,,}"
           ref="${INPUT_REF:-${GITHUB_REF_NAME}}"
+
+          [[ $emscripten =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+            || { echo "invalid emscripten_version: '$emscripten'" >&2; exit 1; }
+          [[ $features =~ ^[a-z0-9_]+(,[a-z0-9_]+)*$ ]] \
+            || { echo "invalid emscripten_features: '$features' (comma-separated, no spaces)" >&2; exit 1; }
+          [[ $unity =~ ^[0-9A-Za-z.]+$ ]] \
+            || { echo "invalid unity_version: '$unity'" >&2; exit 1; }
+
+          # Only a branch or tag of this repository may be built: no bare SHAs,
+          # no refs/pull/*, no commits that live only in some other fork.
+          git ls-remote --exit-code "https://github.com/${GITHUB_REPOSITORY}.git" \
+              "refs/heads/$ref" "refs/tags/$ref" >/dev/null \
+            || { echo "ref '$ref' is not a branch or tag of ${GITHUB_REPOSITORY}" >&2; exit 1; }
+
+          # Every job builds this exact commit, whatever the ref moves to meanwhile.
+          sha="$(git rev-parse HEAD)"
 
           base="$(awk '$1 == "SkiaSharp" && $2 == "nuget" { print $3; exit }' scripts/VERSIONS.txt)"
           [ -n "$base" ] || { echo "no SkiaSharp nuget version in scripts/VERSIONS.txt" >&2; exit 1; }
 
-          # A release is a tag push, never a manual dispatch -- dispatching from
-          # a tag while building some other ref must not produce a release.
-          if [ "$EVENT_NAME" = push ]; then
-            # v3.119.2-ss.1 -> 3.119.2-ss.1
-            bundle="${GITHUB_REF_NAME#v}"
-            is_release=true
+          # A release is a tag push, never a manual dispatch or a branch push --
+          # dispatching from a tag while building some other ref must not
+          # produce a release, and a branch name is not a version.
+          if [ "$EVENT_NAME" = push ] && [ "$GITHUB_REF_TYPE" = tag ]; then
+            # v3.119.2-ss.1 -> 3.119.2-ss.1; the base must be what is built.
+            if [[ $GITHUB_REF_NAME =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-ss\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] \
+               && [ "${BASH_REMATCH[1]}" = "$base" ]; then
+              bundle="${GITHUB_REF_NAME#v}"
+              is_release=true
+            else
+              echo "tag $GITHUB_REF_NAME does not match SkiaSharp $base from scripts/VERSIONS.txt (expected v$base-ss.N)" >&2
+              exit 1
+            fi
           else
             bundle="${base}-dev.$(git rev-parse --short HEAD)"
             is_release=false
           fi
 
+          # The bundle version ends up in an artifact name and a file name.
+          [[ $bundle =~ ^[0-9A-Za-z.-]+$ ]] \
+            || { echo "bundle version '$bundle' is not a valid artifact name" >&2; exit 1; }
+
           # The cake script drops feature entries starting with '_' from the
           # output path and joins the rest with commas, so _wasmeh,st,simd
           # lands in <version>/st,simd/. Mirror that here instead of hardcoding.
-          modifiers="$(tr ',' '\n' <<< "$features" | grep -vE '^(_|none$)' | paste -sd, - || true)"
+          modifiers="$(tr ',' '\n' <<< "$features" | { grep -vE '^(_|none$)' || true; } | paste -sd, -)"
           if [ -n "$modifiers" ]; then
             subpath="${emscripten}/${modifiers}"
           else
@@ -103,6 +149,7 @@ jobs:
 
           {
             echo "ref=$ref"
+            echo "sha=$sha"
             echo "bundle_version=$bundle"
             echo "is_release=$is_release"
             echo "emscripten_version=$emscripten"
@@ -117,7 +164,10 @@ jobs:
             echo "| | |"
             echo "|---|---|"
             echo "| ref | \`$ref\` |"
+            echo "| commit | \`$sha\` |"
+            echo "| CI commit | \`$GITHUB_SHA\` |"
             echo "| bundle version | \`$bundle\` |"
+            echo "| release | \`$is_release\` |"
             echo "| emscripten | \`$emscripten\` |"
             echo "| features | \`$features\` |"
             echo "| wasm output subpath | \`$subpath\` |"
@@ -127,22 +177,51 @@ jobs:
   wasm:
     name: wasm (libSkiaSharp.a, libHarfBuzzSharp.a)
     needs: prepare
+    if: ${{ !contains(github.event.head_commit.message, '[wasm:skip]') }} # TEMP-DEBUG
     runs-on: ubuntu-latest
+    timeout-minutes: 300
+    permissions: # TEMP-DEBUG
+      contents: read # TEMP-DEBUG
+      actions: read # TEMP-DEBUG: download slots-wasm from another run
+    env: # TEMP-DEBUG
+      REUSE_WASM_RUN_ID: ${{ inputs.reuse_wasm_run_id || '' }} # TEMP-DEBUG
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.prepare.outputs.ref }}
+          ref: ${{ needs.prepare.outputs.sha }}
           submodules: false
+          persist-credentials: false
+
+      # After the main checkout: its clean step would delete .ci otherwise.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: .ci
+          sparse-checkout: |
+            .github/scripts
+            documentation/ci
+          persist-credentials: false
+
+      - name: Reuse slots-wasm from an earlier run # TEMP-DEBUG
+        if: env.REUSE_WASM_RUN_ID != '' # TEMP-DEBUG
+        uses: actions/download-artifact@v4 # TEMP-DEBUG
+        with: # TEMP-DEBUG
+          name: slots-wasm # TEMP-DEBUG
+          path: slots # TEMP-DEBUG
+          run-id: ${{ env.REUSE_WASM_RUN_ID }} # TEMP-DEBUG
+          github-token: ${{ github.token }} # TEMP-DEBUG
 
       # Only the two submodules the build needs; docs/ is irrelevant here and
       # disk is the binding constraint on a GitHub-hosted runner.
       - name: Initialise skia and depot_tools
+        if: env.REUSE_WASM_RUN_ID == '' # TEMP-DEBUG
         run: git submodule update --init --depth 1 externals/skia externals/depot_tools
 
       # GitHub-hosted runners guarantee 14 GB free; one wasm run needs more.
       # Removing preinstalled toolchains we do not use reclaims 25-45 GB.
       # Host dotnet is not needed: the build runs inside a container.
       - name: Free disk space
+        if: env.REUSE_WASM_RUN_ID == '' # TEMP-DEBUG
         run: |
           set -uo pipefail
           echo "before:"; df -h /
@@ -151,40 +230,56 @@ jobs:
                       /usr/local/share/powershell /usr/share/swift || true
           sudo docker image prune -af >/dev/null 2>&1 || true
           echo "after:"; df -h /
+          df --output=used,avail -BM / | tail -1 > "$RUNNER_TEMP/df-start.txt"
+
+      # Samples disk use during the build, so Report cost can give the peak
+      # rather than whatever is left at the end.
+      - name: Start disk sampler
+        if: env.REUSE_WASM_RUN_ID == '' # TEMP-DEBUG
+        run: |
+          nohup bash -c 'while :; do df --output=used -BM / | tail -1 | tr -dc 0-9; echo; sleep 15; done' \
+            > "$RUNNER_TEMP/df.log" 2>/dev/null &
 
       # This command is fixed by the specification and must not change.
       - name: Build
+        if: env.REUSE_WASM_RUN_ID == '' # TEMP-DEBUG
         env:
           EMSCRIPTEN_VERSION: ${{ needs.prepare.outputs.emscripten_version }}
           EMSCRIPTEN_FEATURES: ${{ needs.prepare.outputs.emscripten_features }}
         run: |
           set -euo pipefail
-          started=$SECONDS
+          # SECONDS counts from the start of this step's shell. Recorded even
+          # when the build fails, so a failed run still says how far it got.
+          trap 'echo "BUILD_SECONDS=$SECONDS" >> "$GITHUB_ENV"' EXIT
           bash scripts/Docker/wasm/build-local.sh "$EMSCRIPTEN_VERSION" \
             --wasmRenameThirdPartySymbols=true \
             --emscriptenFeatures="$EMSCRIPTEN_FEATURES"
-          echo "BUILD_SECONDS=$((SECONDS - started))" >> "$GITHUB_ENV"
 
       # The build runs as root inside the container, so the tree it wrote is
       # root-owned on the host.
       - name: Take ownership of build output
+        if: env.REUSE_WASM_RUN_ID == '' # TEMP-DEBUG
         run: sudo chown -R "$(id -u):$(id -g)" output native externals
 
       - name: Check symbols
+        if: env.REUSE_WASM_RUN_ID == '' # TEMP-DEBUG
         env:
           EMSCRIPTEN_VERSION: ${{ needs.prepare.outputs.emscripten_version }}
           SUBPATH: ${{ needs.prepare.outputs.wasm_subpath }}
+          BASELINE_FILE: .ci/documentation/ci/harfbuzz-symbol-baseline.txt
         run: |
           # Without pipefail the step would take tee's exit status and a failing
-          # check would pass silently.
+          # check would pass silently. stderr goes along so FAIL lines reach
+          # the summary too.
           set -euo pipefail
-          bash .github/scripts/check-wasm-symbols.sh \
+          bash .ci/.github/scripts/check-wasm-symbols.sh \
             "skiasharp-wasm:${EMSCRIPTEN_VERSION}" \
             "output/native/wasm/libSkiaSharp.a/${SUBPATH}/libSkiaSharp.a" \
             "output/native/wasm/libHarfBuzzSharp.a/${SUBPATH}/libHarfBuzzSharp.a" \
-            | tee -a "$GITHUB_STEP_SUMMARY"
+            2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Collect slots
+        if: env.REUSE_WASM_RUN_ID == '' # TEMP-DEBUG
         env:
           SUBPATH: ${{ needs.prepare.outputs.wasm_subpath }}
         run: |
@@ -197,16 +292,20 @@ jobs:
       # Open question in the spec: how long a cold build actually takes and how
       # much disk it needs. Recorded here so the first run answers it.
       - name: Report cost
-        if: always()
+        if: always() && env.REUSE_WASM_RUN_ID == '' # TEMP-DEBUG: before merge restore plain 'if: always()'
         run: |
+          start="$(cat "$RUNNER_TEMP/df-start.txt" 2>/dev/null || true)"
+          peak="$(sort -n "$RUNNER_TEMP/df.log" 2>/dev/null | tail -1 || true)"
           {
             echo "### wasm build cost"
             echo
             echo "- wall clock: ${BUILD_SECONDS:-unknown} s"
+            echo "- disk used / available after freeing, before build (MB): ${start:-unknown}"
+            echo "- peak disk used during build: ${peak:-unknown} MB"
             echo "- disk after build:"
             echo '```'
             df -h /
-            du -sh externals/skia/out 2>/dev/null || true
+            du -sh externals/skia/out externals/skia output 2>/dev/null || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -217,18 +316,50 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      # A failed check is otherwise investigable only by rebuilding for hours.
+      # Generated headers are gitignored; externals/skia/out is several GB and
+      # deliberately left out.
+      - name: Keep build output on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-failed-${{ github.run_attempt }}
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            output/native/wasm/**
+            native/wasm/libSkiaSharp/wasm_symbol_renames.h
+            native/wasm/libHarfBuzzSharp/wasm_symbol_renames.h
+            native/wasm/libHarfBuzzSharp/wasm_symbol_aliases.h
+
   linux:
     name: linux (libHarfBuzzSharp.so)
     needs: prepare
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.prepare.outputs.ref }}
+          ref: ${{ needs.prepare.outputs.sha }}
           submodules: false
+          persist-credentials: false
 
       - name: Initialise skia and depot_tools
         run: git submodule update --init --depth 1 externals/skia externals/depot_tools
+
+      # The pinned depot_tools uses bare @functools.lru_cache, which Python 3.7
+      # in the debian:10 image rejects. native/linux/build.cake patches it only
+      # in the libSkiaSharp task, which this job does not run; upstream never
+      # notices because its Default target runs libSkiaSharp first.
+      - name: Patch depot_tools for Python 3.7
+        run: |
+          set -euo pipefail
+          f=externals/depot_tools/gclient_paths.py
+          sed -i -E 's/@functools\.lru_cache[[:space:]]*$/@functools.lru_cache()/' "$f"
+          if grep -nE '@functools\.lru_cache[[:space:]]*$' "$f"; then
+            echo "::error::unpatched lru_cache decorator left in $f"
+            exit 1
+          fi
 
       # Only the libHarfBuzzSharp target: one amalgamated .cc, not a full Skia
       # build. libSkiaSharp.so comes from nuget.org -- the fork's Linux change
@@ -250,6 +381,24 @@ jobs:
           cp output/native/linux/x64/libHarfBuzzSharp.so slots/x86_64/
           ls -l slots/x86_64
 
+      # The reason this .so is built here at all. With the flag, calls between
+      # harfbuzz's own functions bind locally, so no hb_* call goes through the
+      # PLT; without it the stock build has dozens of such entries.
+      - name: Check -Bsymbolic-functions took effect
+        run: |
+          set -euo pipefail
+          so=slots/x86_64/libHarfBuzzSharp.so
+          relocs="$(readelf -r --wide "$so")"
+          total="$(awk '/JUMP_SLOT/' <<< "$relocs" | wc -l)"
+          hb="$(awk '/JUMP_SLOT/ && / hb_/' <<< "$relocs" | wc -l)"
+          {
+            echo "### libHarfBuzzSharp.so"
+            echo
+            echo "- JUMP_SLOT relocations: $total, hb_* among them: $hb"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          [ "$total" -gt 0 ] || { echo "FAIL: no JUMP_SLOT relocations at all -- unexpected readelf output" | tee -a "$GITHUB_STEP_SUMMARY" >&2; exit 1; }
+          [ "$hb" -eq 0 ] || { echo "FAIL: $hb hb_* PLT entries -- -Wl,-Bsymbolic-functions not applied" | tee -a "$GITHUB_STEP_SUMMARY" >&2; exit 1; }
+
       - uses: actions/upload-artifact@v4
         with:
           name: slots-linux
@@ -257,19 +406,43 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Keep build output on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-failed-${{ github.run_attempt }}
+          if-no-files-found: ignore
+          retention-days: 7
+          path: output/native/linux/**
+
   managed:
     name: managed (__Internal variants)
     needs: prepare
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.prepare.outputs.ref }}
+          ref: ${{ needs.prepare.outputs.sha }}
           submodules: false
+          persist-credentials: false
 
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
+
+      # setup-dotnet only installs SDK 8; without a pin the newest SDK already
+      # on the runner wins. The repo's global.json has no version, so add one
+      # here, for this job only.
+      - name: Pin SDK 8
+        run: |
+          set -euo pipefail
+          ver="$(dotnet --list-sdks | awk '/^8\.0\./ { v = $1 } END { print v }')"
+          [ -n "$ver" ] || { echo "no 8.0.x SDK installed" >&2; exit 1; }
+          jq --arg v "$ver" '.sdk.version = $v | .sdk.rollForward = "latestFeature"' global.json > "$RUNNER_TEMP/global.json"
+          mv "$RUNNER_TEMP/global.json" global.json
+          dotnet --version | tee -a "$GITHUB_STEP_SUMMARY"
+          case "$(dotnet --version)" in 8.0.*) ;; *) echo "SDK pin did not take effect" >&2; exit 1 ;; esac
 
       # netstandard2.1, not net8.0. Needs nothing from output/native.
       # SkiaSharpUnityWebGLInternal is passed as a property rather than through
@@ -285,23 +458,29 @@ jobs:
       # Unity's WebGL backend statically links everything into one module, so a
       # P/Invoke module name other than "__Internal" makes it look for a native
       # module that does not exist. Verify the switch actually took effect.
+      # strings is captured first: piping it into grep -q under pipefail fails
+      # on SIGPIPE whenever grep matches early.
       - name: Check __Internal took effect
         run: |
           set -euo pipefail
           failed=0
+          report="$RUNNER_TEMP/internal-check.txt"
+          : > "$report"
           for dll in SkiaSharp HarfBuzzSharp; do
             file="artifacts/unity-webgl/${dll}.dll"
-            if strings -a "$file" | grep -qx '__Internal'; then
-              echo "ok:   ${dll}.dll uses __Internal"
+            s="$(strings -a "$file")"
+            if grep -qx '__Internal' <<< "$s"; then
+              echo "ok:   ${dll}.dll uses __Internal" >> "$report"
             else
-              echo "FAIL: ${dll}.dll does not contain __Internal" >&2
+              echo "FAIL: ${dll}.dll does not contain __Internal" >> "$report"
               failed=1
             fi
-            if strings -a "$file" | grep -qxE 'libSkiaSharp|libHarfBuzzSharp'; then
-              echo "FAIL: ${dll}.dll still references a dynamic module name" >&2
+            if grep -qxE 'libSkiaSharp|libHarfBuzzSharp' <<< "$s"; then
+              echo "FAIL: ${dll}.dll still references a dynamic module name" >> "$report"
               failed=1
             fi
           done
+          tee -a "$GITHUB_STEP_SUMMARY" < "$report"
           exit "$failed"
 
       - name: Collect slots
@@ -322,14 +501,23 @@ jobs:
     name: stock natives from nuget.org
     needs: prepare
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.prepare.outputs.ref }}
+          ref: ${{ needs.prepare.outputs.sha }}
           submodules: false
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: .ci
+          sparse-checkout: .github/scripts
+          persist-credentials: false
 
       - name: Fetch
-        run: bash .github/scripts/fetch-stock-natives.sh slots
+        run: bash .ci/.github/scripts/fetch-stock-natives.sh slots
 
       - uses: actions/upload-artifact@v4
         with:
@@ -342,13 +530,20 @@ jobs:
     name: Bundle
     needs: [prepare, wasm, linux, managed, stock]
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.prepare.outputs.ref }}
+          ref: ${{ needs.prepare.outputs.sha }}
           submodules: false
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: .ci
+          sparse-checkout: .github/scripts
+          persist-credentials: false
 
       - uses: actions/download-artifact@v4
         with:
@@ -360,14 +555,15 @@ jobs:
         env:
           BUNDLE_VERSION: ${{ needs.prepare.outputs.bundle_version }}
           BUILD_REF: ${{ needs.prepare.outputs.ref }}
-          BUILD_COMMIT: ${{ github.sha }}
+          BUILD_COMMIT: ${{ needs.prepare.outputs.sha }}
+          CI_COMMIT: ${{ github.sha }}
           EMSCRIPTEN_VERSION: ${{ needs.prepare.outputs.emscripten_version }}
           EMSCRIPTEN_FEATURES: ${{ needs.prepare.outputs.emscripten_features }}
           UNITY_VERSION: ${{ needs.prepare.outputs.unity_version }}
         run: |
           set -euo pipefail
-          bash .github/scripts/make-bundle.sh slots \
-            "dist/skiasharp-unity-${BUNDLE_VERSION}.zip" | tee -a "$GITHUB_STEP_SUMMARY"
+          bash .ci/.github/scripts/make-bundle.sh slots \
+            "dist/skiasharp-unity-${BUNDLE_VERSION}.zip" 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -376,20 +572,45 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # Release bundles are what versions.json in the Unity project points at,
-      # so they are kept indefinitely. Dev builds stay as run artefacts only.
-      - name: Publish release
-        if: needs.prepare.outputs.is_release == 'true'
+  # Release bundles are what versions.json in the Unity project points at,
+  # so they are kept indefinitely. Dev builds stay as run artefacts only.
+  # The only job with a write token: no checkout, no repository code.
+  publish:
+    name: Publish release
+    needs: [prepare, bundle]
+    if: needs.prepare.outputs.is_release == 'true' && github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: bundle-${{ needs.prepare.outputs.bundle_version }}
+          path: dist
+
+      - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
           BUNDLE_VERSION: ${{ needs.prepare.outputs.bundle_version }}
         run: |
           set -euo pipefail
-          asset="dist/skiasharp-unity-${BUNDLE_VERSION}.zip"
+          name="skiasharp-unity-${BUNDLE_VERSION}.zip"
+          asset="dist/$name"
+          draft=()
+          draft=(--draft) # TEMP-DEBUG: debug releases stay drafts
           notes="Bundle \`${BUNDLE_VERSION}\` for the Unity project. Unpack into \`Assets/ExternalPlugins/\`; see \`documentation/ci/native-build-spec.md\`."
-          if gh release view "$TAG" >/dev/null 2>&1; then
+          # A published bundle version is immutable: the Unity project may
+          # already have consumed it. A draft left by a failed attempt is not.
+          if info="$(gh release view "$TAG" --json isDraft,assets 2>/dev/null)"; then
+            if jq -e --arg n "$name" '(.isDraft | not) and any(.assets[]; .name == $n)' <<< "$info" >/dev/null; then
+              echo "::error::release $TAG already has $name; cut a new -ss.N tag instead of replacing it"
+              exit 1
+            fi
             gh release upload "$TAG" "$asset" --clobber
+            [ "${#draft[@]}" -gt 0 ] || gh release edit "$TAG" --draft=false
           else
-            gh release create "$TAG" --title "$TAG" --notes "$notes" "$asset"
+            gh release create "$TAG" --title "$TAG" --notes "$notes" "${draft[@]}" "$asset"
           fi

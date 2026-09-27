@@ -15,14 +15,17 @@ IMAGE="${1:?usage: check-wasm-symbols.sh <image> <libSkiaSharp.a> <libHarfBuzzSh
 SKIA_ARCHIVE="${2:?missing libSkiaSharp.a}"
 HARFBUZZ_ARCHIVE="${3:?missing libHarfBuzzSharp.a}"
 
-BASELINE_FILE="documentation/ci/harfbuzz-symbol-baseline.txt"
+# Overridable because CI takes the baseline from the workflow's own commit,
+# not from the ref being built (which may predate the file).
+BASELINE_FILE="${BASELINE_FILE:-documentation/ci/harfbuzz-symbol-baseline.txt}"
 failures=0
 
 fail() { echo "FAIL: $*" >&2; failures=$((failures + 1)); }
 pass() { echo "ok:   $*"; }
 
-# Prints at most 40 lines of context for a failure, indented.
-show() { sed 's/^/        /' | head -40 >&2; }
+# Prints at most 40 lines of context for a failure, indented. Reads all of its
+# input: 'sed | head' would die of SIGPIPE under pipefail on a long list.
+show() { awk 'NR <= 40 { print "        " $0 } END { if (NR > 40) print "        ... (" NR - 40 " more)" }' >&2; }
 
 for archive in "$SKIA_ARCHIVE" "$HARFBUZZ_ARCHIVE"; do
     [ -s "$archive" ] || { echo "not found or empty: $archive" >&2; exit 1; }
@@ -35,7 +38,7 @@ symbols() {
     docker run --rm --volume "$PWD:/work" --workdir /work "$IMAGE" \
         emnm --defined-only --extern-only "$1" \
         | awk 'NF == 3 && $1 ~ /^[0-9a-fA-F]+$/ { print $3 }' \
-        | sort -u
+        | LC_ALL=C sort -u
 }
 
 echo "== libSkiaSharp.a =="
@@ -85,15 +88,15 @@ managed_api="$(
     grep -hv '^[[:space:]]*// typedef' \
         binding/HarfBuzzSharp/HarfBuzzApi.cs \
         binding/HarfBuzzSharp/HarfBuzzApi.generated.cs \
-    | grep -hoP '\bhb_[A-Za-z0-9_]*\b(?=\s*\()' \
-    | sort -u
+    | { grep -hoP '\bhb_[A-Za-z0-9_]*\b(?=\s*\()' || true; } \
+    | LC_ALL=C sort -u
 )"
 # If the binding files ever move, extraction would silently yield nothing and
 # this check would pass while verifying absolutely nothing.
 if [ -z "$managed_api" ]; then
     fail "extracted no hb_* names from the managed binding -- did binding/HarfBuzzSharp/HarfBuzzApi*.cs move?"
 else
-    missing="$(comm -23 <(printf '%s\n' "$managed_api") <(printf '%s\n' "$hb_symbols"))"
+    missing="$(LC_ALL=C comm -23 <(printf '%s\n' "$managed_api") <(printf '%s\n' "$hb_symbols"))"
     if [ -n "$missing" ]; then
         fail "$(wc -l <<< "$missing") hb_* names P/Invoked by the binding are not exported:"
         show <<< "$missing"
@@ -102,21 +105,31 @@ else
     fi
 fi
 
-# 5. Guard on harfbuzz's unprotected C++ internals. This does not fix the gap
+# 5. harfbuzz's own renaming actually ran. Check 4 alone would pass on a
+#    completely unrenamed archive, since every hb_* name is then present anyway.
+hb_renamed="$(grep -c '^sksharp_hb_' <<< "$hb_symbols" || true)"
+if [ "$hb_renamed" -eq 0 ]; then
+    fail "no sksharp_hb_* symbols in libHarfBuzzSharp.a -- the harfbuzz rename header did not take effect"
+else
+    pass "$hb_renamed renamed sksharp_hb_* symbols"
+fi
+
+# 6. Guard on harfbuzz's unprotected C++ internals. This does not fix the gap
 #    documented in documentation/adr/0003-harfbuzz-cpp-internals-residual-risk.md
 #    -- it turns a silent, DEPS-bump-fragile risk into a build-time signal.
 #    Until a baseline is recorded, this only reports.
-unprotected="$(grep '^_Z' <<< "$hb_symbols" | grep -cv '^sksharp_' || true)"
-echo "   unprotected mangled C++ symbols (_Z* without sksharp_): $unprotected"
+#    Renamed symbols start with sksharp_, so every _Z* name is unprotected.
+unprotected="$(grep -c '^_Z' <<< "$hb_symbols" || true)"
+echo "   unprotected mangled C++ symbols (_Z*): $unprotected"
 
 if [ -f "$BASELINE_FILE" ]; then
-    baseline="$(grep -oE '^[0-9]+' "$BASELINE_FILE" | head -1)"
+    baseline="$(grep -oE '^[0-9]+' "$BASELINE_FILE" | head -1 || true)"
     if [ -z "$baseline" ]; then
         fail "$BASELINE_FILE exists but holds no number"
     elif [ "$unprotected" -gt "$baseline" ]; then
         fail "unprotected mangled symbols grew: $unprotected > $baseline (baseline in $BASELINE_FILE).
         Something widened the collision surface against a host's own harfbuzz --
-        a harfbuzz DEPS bump, a flag change, or a regression in the rename mechanism.
+        a harfbuzz DEPS bump or a change of build flags.
         See documentation/adr/0003-harfbuzz-cpp-internals-residual-risk.md before raising the baseline."
     else
         pass "unprotected mangled symbols within baseline ($unprotected <= $baseline)"

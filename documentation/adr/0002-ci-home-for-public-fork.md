@@ -59,7 +59,12 @@ GitHub-hosted даёт 4 ядра против 16 у c7a.4xlarge. Разрабо
 ## Последствия
 
 - У сборки нет секретов: `GITHUB_TOKEN` нужен только для создания релиза.
-- Триггера `pull_request` нет. «Require approval for all external contributors» в настройках
-  Actions остаётся как защита в глубину, а не как несущий контроль.
+- Триггера `pull_request` нет. Несущий контроль от чужого кода — политики Actions репозитория
+  (upstream-workflow запускаются только вручную, `native-build.yml` — только `push` и
+  `workflow_dispatch`) и список из четырёх разрешённых action. «Require approval for all external
+  contributors» защитой в глубину не является: на `pull_request_target` и `issue_comment` оно не
+  действует, а PR из форка может принести собственный workflow. Одобрение запусков, поштучное
+  отключение upstream-workflow и `GITHUB_TOKEN` только на чтение — дополнительные слои. Подробно —
+  в [спецификации](../ci/native-build-spec.md#82-защита-публичного-форка), §8.2.
 - Перенос бандла требует нажатия кнопки в GitLab — сознательно, потому что обновление версии
   SkiaSharp в Unity-проекте должно проходить через ревью.
