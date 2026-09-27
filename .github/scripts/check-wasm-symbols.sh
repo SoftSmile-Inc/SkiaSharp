@@ -100,6 +100,17 @@ else
     if [ -n "$missing" ]; then
         fail "$(wc -l <<< "$missing") hb_* names P/Invoked by the binding are not exported:"
         show <<< "$missing"
+        # An alias declared without extern "C" in a C++ translation unit is
+        # exported as _Z<len><name>v instead -- present, but not under the name
+        # the P/Invoke looks for.
+        mangled="$(
+            while read -r name; do printf '_Z%d%sv\n' "${#name}" "$name"; done <<< "$missing" \
+            | LC_ALL=C sort | LC_ALL=C comm -12 - <(printf '%s\n' "$hb_symbols")
+        )"
+        if [ -n "$mangled" ]; then
+            echo "        $(wc -l <<< "$mangled") of them are exported only C++-mangled, e.g. $(head -1 <<< "$mangled"):" >&2
+            echo "        the alias declarations have C++ linkage (missing extern \"C\")." >&2
+        fi
     else
         pass "all $(wc -l <<< "$managed_api") P/Invoked hb_* names exported under their original names"
     fi

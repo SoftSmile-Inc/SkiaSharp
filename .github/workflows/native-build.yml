@@ -304,7 +304,7 @@ jobs:
             df -h /
             du -sh externals/skia/out externals/skia output 2>/dev/null || true
             echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
         with:
