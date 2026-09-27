@@ -37,11 +37,6 @@ on:
         required: false
         type: string
         default: '6000.3.8f1'
-      reuse_wasm_run_id: # TEMP-DEBUG
-        description: 'DEBUG: take slots-wasm from this earlier run instead of building' # TEMP-DEBUG
-        required: false # TEMP-DEBUG
-        type: string # TEMP-DEBUG
-        default: '' # TEMP-DEBUG
   push:
     tags:
       - 'v*-ss.*'
@@ -177,11 +172,6 @@ jobs:
     needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 300
-    permissions: # TEMP-DEBUG
-      contents: read # TEMP-DEBUG
-      actions: read # TEMP-DEBUG: download slots-wasm from another run
-    env: # TEMP-DEBUG
-      REUSE_WASM_RUN_ID: ${{ inputs.reuse_wasm_run_id || '' }} # TEMP-DEBUG
     steps:
       - uses: actions/checkout@v4
         with:
@@ -199,47 +189,22 @@ jobs:
             documentation/ci
           persist-credentials: false
 
-      - name: Reuse slots-wasm from an earlier run # TEMP-DEBUG
-        if: env.REUSE_WASM_RUN_ID != '' # TEMP-DEBUG
-        uses: actions/download-artifact@v4 # TEMP-DEBUG
-        with: # TEMP-DEBUG
-          name: slots-wasm # TEMP-DEBUG
-          path: slots # TEMP-DEBUG
-          run-id: ${{ env.REUSE_WASM_RUN_ID }} # TEMP-DEBUG
-          github-token: ${{ github.token }} # TEMP-DEBUG
-
-      # Only the two submodules the build needs; docs/ is irrelevant here and
-      # disk is the binding constraint on a GitHub-hosted runner.
+      # Only the two submodules the build needs; docs/ is irrelevant here.
       - name: Initialise skia and depot_tools
-        if: env.REUSE_WASM_RUN_ID == '' # TEMP-DEBUG
         run: git submodule update --init --depth 1 externals/skia externals/depot_tools
 
-      # GitHub-hosted runners guarantee 14 GB free; one wasm run needs more.
-      # Removing preinstalled toolchains we do not use reclaims 25-45 GB.
-      # Host dotnet is not needed: the build runs inside a container.
-      - name: Free disk space
-        if: env.REUSE_WASM_RUN_ID == '' # TEMP-DEBUG
-        run: |
-          set -uo pipefail
-          echo "before:"; df -h /
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-                      /usr/local/.ghcup /opt/hostedtoolcache/CodeQL \
-                      /usr/local/share/powershell /usr/share/swift || true
-          sudo docker image prune -af >/dev/null 2>&1 || true
-          echo "after:"; df -h /
-          df --output=used,avail -BM / | tail -1 > "$RUNNER_TEMP/df-start.txt"
-
       # Samples disk use during the build, so Report cost can give the peak
-      # rather than whatever is left at the end.
+      # rather than whatever is left at the end. A build adds about 5 GB, well
+      # within the 14 GB a GitHub-hosted runner guarantees, so nothing is freed
+      # beforehand (spec §9).
       - name: Start disk sampler
-        if: env.REUSE_WASM_RUN_ID == '' # TEMP-DEBUG
         run: |
+          df --output=used,avail -BM / | tail -1 > "$RUNNER_TEMP/df-start.txt"
           nohup bash -c 'while :; do df --output=used -BM / | tail -1 | tr -dc 0-9; echo; sleep 15; done' \
             > "$RUNNER_TEMP/df.log" 2>/dev/null &
 
       # This command is fixed by the specification and must not change.
       - name: Build
-        if: env.REUSE_WASM_RUN_ID == '' # TEMP-DEBUG
         env:
           EMSCRIPTEN_VERSION: ${{ needs.prepare.outputs.emscripten_version }}
           EMSCRIPTEN_FEATURES: ${{ needs.prepare.outputs.emscripten_features }}
@@ -255,11 +220,9 @@ jobs:
       # The build runs as root inside the container, so the tree it wrote is
       # root-owned on the host.
       - name: Take ownership of build output
-        if: env.REUSE_WASM_RUN_ID == '' # TEMP-DEBUG
         run: sudo chown -R "$(id -u):$(id -g)" output native externals
 
       - name: Check symbols
-        if: env.REUSE_WASM_RUN_ID == '' # TEMP-DEBUG
         env:
           EMSCRIPTEN_VERSION: ${{ needs.prepare.outputs.emscripten_version }}
           SUBPATH: ${{ needs.prepare.outputs.wasm_subpath }}
@@ -276,7 +239,6 @@ jobs:
             2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Collect slots
-        if: env.REUSE_WASM_RUN_ID == '' # TEMP-DEBUG
         env:
           SUBPATH: ${{ needs.prepare.outputs.wasm_subpath }}
         run: |
@@ -289,7 +251,7 @@ jobs:
       # Open question in the spec: how long a cold build actually takes and how
       # much disk it needs. Recorded here so the first run answers it.
       - name: Report cost
-        if: always() && env.REUSE_WASM_RUN_ID == '' # TEMP-DEBUG: before merge restore plain 'if: always()'
+        if: always()
         run: |
           start="$(cat "$RUNNER_TEMP/df-start.txt" 2>/dev/null || true)"
           peak="$(sort -n "$RUNNER_TEMP/df.log" 2>/dev/null | tail -1 || true)"
@@ -297,7 +259,7 @@ jobs:
             echo "### wasm build cost"
             echo
             echo "- wall clock: ${BUILD_SECONDS:-unknown} s"
-            echo "- disk used / available after freeing, before build (MB): ${start:-unknown}"
+            echo "- disk used / available before build (MB): ${start:-unknown}"
             echo "- peak disk used during build: ${peak:-unknown} MB"
             echo "- disk after build:"
             echo '```'
@@ -596,8 +558,6 @@ jobs:
           set -euo pipefail
           name="skiasharp-unity-${BUNDLE_VERSION}.zip"
           asset="dist/$name"
-          draft=()
-          draft=(--draft) # TEMP-DEBUG: debug releases stay drafts
           notes="Bundle \`${BUNDLE_VERSION}\` for the Unity project. Unpack into \`Assets/ExternalPlugins/\`; see \`documentation/ci/native-build-spec.md\`."
           # A published bundle version is immutable: the Unity project may
           # already have consumed it. A draft left by a failed attempt is not.
@@ -607,7 +567,7 @@ jobs:
               exit 1
             fi
             gh release upload "$TAG" "$asset" --clobber
-            [ "${#draft[@]}" -gt 0 ] || gh release edit "$TAG" --draft=false
+            gh release edit "$TAG" --draft=false
           else
-            gh release create "$TAG" --title "$TAG" --notes "$notes" "${draft[@]}" "$asset"
+            gh release create "$TAG" --title "$TAG" --notes "$notes" "$asset"
           fi
