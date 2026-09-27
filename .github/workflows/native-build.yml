@@ -171,7 +171,8 @@ jobs:
     name: wasm (libSkiaSharp.a, libHarfBuzzSharp.a)
     needs: prepare
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    # A cold build takes 7-12 minutes (spec §9); anything near an hour is a stall.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
