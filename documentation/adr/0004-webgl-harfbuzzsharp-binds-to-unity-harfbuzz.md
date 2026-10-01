@@ -50,11 +50,17 @@ Plain-алиасы `hb_*` в нашем архиве опасны при люб�
 
 - HarfBuzzSharp 8.3.1.3 работает поверх harfbuzz Unity 8.0.1, и в плеере это один экземпляр
   harfbuzz, общий с движком.
+- Прежняя конфигурация была безопасна лишь условно: пять имён, которые harfbuzz сам затеняет
+  макросами (`hb_color_get_*`, `hb_glyph_info_get_glyph_flags`), старый архив экспортировал под
+  C-именами, и ссылка на любое из них при неудачном порядке архивов загружала наш объект — 130
+  `duplicate symbol`. Без архива этой ловушки нет.
 - Восьми функций, которые P/Invoke'ит биндинг, у Unity нет: `hb_buffer_serialize`,
   `hb_buffer_serialize_glyphs`, `hb_buffer_serialize_unicode`,
   `hb_buffer_serialize_format_from_string`, `hb_buffer_serialize_format_to_string`,
   `hb_buffer_serialize_list_formats`, `hb_buffer_deserialize_glyphs`,
-  `hb_buffer_deserialize_unicode`. В плеере их вызвать нельзя — так было и раньше.
+  `hb_buffer_deserialize_unicode`. Если IL2CPP на них сошлётся, линковка упадёт с `undefined symbol`
+(emscripten по умолчанию `ERROR_ON_UNDEFINED_SYMBOLS=1`, Unity это не переопределяет) — так было и
+раньше.
 - Связь с внутренностями Unity: апгрейд Unity может поменять версию или состав её harfbuzz, а
   вырезание модуля TextRendering оставит P/Invoke без определений. Апгрейд будет ловить проверка
   согласованности (спецификация, §7.3); пока эта джоба не реализована — ручная проверка при апгрейде.
