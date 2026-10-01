@@ -59,10 +59,13 @@ src_hb="$(stock HarfBuzzSharp)"
 v_skia="$(nuget_version SkiaSharp)"
 v_hb="$(nuget_version HarfBuzzSharp)"
 
+# There is deliberately no WebGL/libHarfBuzzSharp.a: in the Unity WebGL player
+# HarfBuzzSharp binds to the harfbuzz Unity itself links in, and a second copy
+# collides with it at link time (documentation/adr/0004-*).
+#
 # slot path <TAB> source description
 SLOT_TABLE="$(cat <<EOF
 WebGL/libSkiaSharp.a	fork
-WebGL/libHarfBuzzSharp.a	fork
 WebGL/SkiaSharp.dll	fork
 WebGL/HarfBuzzSharp.dll	fork
 x86_64/libHarfBuzzSharp.so	fork
@@ -120,6 +123,8 @@ echo
 
 mkdir -p "$(dirname "$OUTPUT")"
 rm -f "$OUTPUT"
-(cd "$SLOTS" && zip -qr - .) > "$OUTPUT"
+# Only what the slot table names, plus the manifest: a stray file in the slots
+# directory must not ride along unlisted in versions.json.
+(cd "$SLOTS" && { cut -f1 <<< "$SLOT_TABLE"; echo versions.json; } | zip -q - -@) > "$OUTPUT"
 
 echo "bundle: $OUTPUT ($(du -h "$OUTPUT" | cut -f1))"

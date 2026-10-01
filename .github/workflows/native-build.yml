@@ -168,7 +168,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   wasm:
-    name: wasm (libSkiaSharp.a, libHarfBuzzSharp.a)
+    name: wasm (libSkiaSharp.a)
     needs: prepare
     runs-on: ubuntu-latest
     # A cold build takes 7-12 minutes (spec §9); anything near an hour is a stall.
@@ -239,6 +239,10 @@ jobs:
             "output/native/wasm/libHarfBuzzSharp.a/${SUBPATH}/libHarfBuzzSharp.a" \
             2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
 
+      # libHarfBuzzSharp.a is built and checked (the build command produces it
+      # anyway, and the checks keep the rename mechanism honest), but not
+      # shipped: in the Unity player HarfBuzzSharp binds to Unity's own harfbuzz
+      # (documentation/adr/0004-*).
       - name: Collect slots
         env:
           SUBPATH: ${{ needs.prepare.outputs.wasm_subpath }}
@@ -246,7 +250,6 @@ jobs:
           set -euo pipefail
           mkdir -p slots/WebGL
           cp "output/native/wasm/libSkiaSharp.a/${SUBPATH}/libSkiaSharp.a" slots/WebGL/
-          cp "output/native/wasm/libHarfBuzzSharp.a/${SUBPATH}/libHarfBuzzSharp.a" slots/WebGL/
           ls -l slots/WebGL
 
       # Open question in the spec: how long a cold build actually takes and how

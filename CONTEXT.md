@@ -11,8 +11,9 @@ freetype2/libjpeg-turbo/libpng/harfbuzz, которые Unity несёт сам.
 
 **Форк-сборка**:
 Артефакт, скомпилированный из `SoftSmile-Inc/SkiaSharp`, потому что stock-версия для этой роли
-непригодна. Их пять: wasm `libSkiaSharp.a`, wasm `libHarfBuzzSharp.a`, linux-x64
-`libHarfBuzzSharp.so`, и managed `SkiaSharp.dll` / `HarfBuzzSharp.dll` в варианте `__Internal`.
+непригодна. Их четыре: wasm `libSkiaSharp.a`, linux-x64 `libHarfBuzzSharp.so`, и managed
+`SkiaSharp.dll` / `HarfBuzzSharp.dll` в варианте `__Internal`. wasm `libHarfBuzzSharp.a` собирается,
+но не поставляется: в WebGL используется **harfbuzz Unity**.
 _Avoid_: наша сборка, кастомный SkiaSharp
 
 **Stock-натив**:
@@ -94,8 +95,14 @@ _Avoid_: коммит сборки (двусмысленно)
 _Avoid_: тесты, валидация
 
 **Дыра C++-интерналов**:
-Подтверждённое расхождение: C++-символы harfbuzz (шаблоны, конструкторы/деструкторы) не
-переименовываются и не прячутся механизмом форка. 1027 имён совпадают с теми, что несёт Unity.
-Коллизии сейчас нет только из-за отбрасывания недостижимого кода при линковке, а не по
-устройству механизма.
+Подтверждённое расхождение: C++-символы harfbuzz не переименовываются механизмом форка, а
+`-fvisibility=hidden` от конфликтов при статической линковке не защищает. Против harfbuzz Unity
+конфликтуют 125 strong-символов (weak молча сливаются). Из-за этого наш wasm-harfbuzz не
+поставляется (ADR 0004).
 _Avoid_: известная проблема, баг harfbuzz
+
+**harfbuzz Unity**:
+Копия harfbuzz (8.0.1 в Unity 6000.3.8f1), которую Unity линкует в WebGL-плеер для собственного
+рендера текста. В WebGL HarfBuzzSharp работает на ней: P/Invoke `hb_*` разрешаются в неё, своя
+копия рядом с ней конфликтует.
+_Avoid_: системный harfbuzz, встроенный harfbuzz
