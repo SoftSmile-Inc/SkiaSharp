@@ -1,8 +1,9 @@
 # SoftSmile SkiaSharp Fork
 
 Форк `mono/SkiaSharp` → `SoftSmile-Inc/SkiaSharp`, существующий ради правок, которые позволяют
-статически линковать SkiaSharp и HarfBuzzSharp внутрь Unity-плеера, не сталкиваясь с копиями
-freetype2/libjpeg-turbo/libpng/harfbuzz, которые Unity несёт сам. Этот файл — только глоссарий;
+статически линковать нативный SkiaSharp внутрь Unity-плеера, не сталкиваясь с копиями
+freetype2/libjpeg-turbo/libpng, которые Unity несёт сам. HarfBuzzSharp в WebGL работает на
+harfbuzz самой Unity (ADR 0004). Этот файл — только глоссарий;
 решения живут в `documentation/adr/`, спецификация CI — в `documentation/ci/native-build-spec.md`.
 
 ## Language
@@ -97,8 +98,8 @@ _Avoid_: тесты, валидация
 **Дыра C++-интерналов**:
 Подтверждённое расхождение: C++-символы harfbuzz не переименовываются механизмом форка, а
 `-fvisibility=hidden` от конфликтов при статической линковке не защищает. Против harfbuzz Unity
-конфликтуют 125 strong-символов (weak молча сливаются). Из-за этого наш wasm-harfbuzz не
-поставляется (ADR 0004).
+конфликтуют 125 strong-символов (weak молча сливаются); вместе с 311 plain-алиасами `hb_*` это
+причина, по которой наш wasm-harfbuzz не поставляется (ADR 0004).
 _Avoid_: известная проблема, баг harfbuzz
 
 **harfbuzz Unity**:

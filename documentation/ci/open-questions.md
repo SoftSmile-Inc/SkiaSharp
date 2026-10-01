@@ -1,5 +1,10 @@
 # Вопросы по удалённой сборке нативных библиотек SkiaSharp
 
+> **Исторический документ** — опросник до согласования спецификации. Актуальное состояние —
+> [спецификация](native-build-spec.md) и [ADR](../adr/). В частности, wasm `libHarfBuzzSharp.a`
+> больше не поставляется, а объяснение «коллизии нет из-за dead-code elimination» неверно —
+> см. [ADR 0004](../adr/0004-webgl-harfbuzzsharp-binds-to-unity-harfbuzz.md).
+
 Мы настраиваем CI для форка `SoftSmile-Inc/SkiaSharp`, чтобы сборка wasm/нативных библиотек
 перестала быть ручной операцией на чьей-то машине. Цель текущего этапа — согласованная
 спецификация, а не код.
@@ -12,8 +17,8 @@
 
 ## Что уже установлено (проверено, подтверждать не нужно)
 
-**Версия emscripten.** Unity 6000.3.8f1 несёт `3.1.39-git` (проверено в образе
-`registry.gitlab.com/softsmile_group/vision/editor:ubuntu-6000.3.8f1-webgl-pwsh-3.2.1`, файл
+**Версия emscripten.** Unity 6000.3.8f1 несёт `3.1.39-git` (проверено в образе редактора Unity
+6000.3.8f1 с модулем WebGL, файл
 `PlaybackEngines/WebGLSupport/BuildTools/Emscripten/emscripten/emscripten-version.txt`).
 Тулчейн — форк Unity: `clang version 17.0.0 (Unity-Technologies/llvm-project 7c3f21cd)`.
 

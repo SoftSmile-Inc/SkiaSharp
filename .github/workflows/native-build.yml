@@ -562,7 +562,7 @@ jobs:
           set -euo pipefail
           name="skiasharp-unity-${BUNDLE_VERSION}.zip"
           asset="dist/$name"
-          notes="Bundle \`${BUNDLE_VERSION}\` for the Unity project. Unpack into \`Assets/ExternalPlugins/\`; see \`documentation/ci/native-build-spec.md\`."
+          notes="Bundle \`${BUNDLE_VERSION}\` for the Unity project. Unpack into \`Assets/ExternalPlugins/\` and delete the files listed in \`removedSlots\` of \`versions.json\`, with their \`.meta\` (today: \`WebGL/libHarfBuzzSharp.a\`, see \`documentation/adr/0004-webgl-harfbuzzsharp-binds-to-unity-harfbuzz.md\`). Details: \`documentation/ci/native-build-spec.md\`."
           # A published bundle version is immutable: the Unity project may
           # already have consumed it. A draft left by a failed attempt is not.
           if info="$(gh release view "$TAG" --json isDraft,assets 2>/dev/null)"; then

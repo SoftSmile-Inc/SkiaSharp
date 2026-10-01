@@ -59,10 +59,16 @@ src_hb="$(stock HarfBuzzSharp)"
 v_skia="$(nuget_version SkiaSharp)"
 v_hb="$(nuget_version HarfBuzzSharp)"
 
-# There is deliberately no WebGL/libHarfBuzzSharp.a: in the Unity WebGL player
-# HarfBuzzSharp binds to the harfbuzz Unity itself links in, and a second copy
-# collides with it at link time (documentation/adr/0004-*).
+# Slots that earlier drops put into Assets/ExternalPlugins/ and that must now
+# be deleted there, .meta included. Listed in versions.json as removedSlots so
+# the transfer job deletes exactly these and nothing else -- the same
+# directories also hold plugins that are not ours.
 #
+# WebGL/libHarfBuzzSharp.a: in the Unity WebGL player HarfBuzzSharp binds to
+# the harfbuzz Unity itself links in, and a second copy collides with it at
+# link time (documentation/adr/0004-*).
+REMOVED_SLOTS="WebGL/libHarfBuzzSharp.a"
+
 # slot path <TAB> source description
 SLOT_TABLE="$(cat <<EOF
 WebGL/libSkiaSharp.a	fork
@@ -111,10 +117,12 @@ jq -n \
     --arg emscriptenFeatures "$EMSCRIPTEN_FEATURES" \
     --arg unity "$UNITY_VERSION" \
     --argjson files "$files_json" \
+    --arg removed "$REMOVED_SLOTS" \
     '{bundle: $bundle, ref: $ref, commit: $commit, ciCommit: $ciCommit, builtAt: $builtAt,
       skiaSharp: $skiaSharp, harfBuzzSharp: $harfBuzzSharp,
       emscripten: $emscripten, emscriptenFeatures: $emscriptenFeatures,
-      unity: $unity, files: $files}' \
+      unity: $unity, files: $files,
+      removedSlots: ($removed | split(" ") | map(select(. != "")))}' \
     > "$SLOTS/versions.json"
 
 echo "versions.json:"
@@ -125,6 +133,6 @@ mkdir -p "$(dirname "$OUTPUT")"
 rm -f "$OUTPUT"
 # Only what the slot table names, plus the manifest: a stray file in the slots
 # directory must not ride along unlisted in versions.json.
-(cd "$SLOTS" && { cut -f1 <<< "$SLOT_TABLE"; echo versions.json; } | zip -q - -@) > "$OUTPUT"
+(cd "$SLOTS" && { cut -f1 <<< "$SLOT_TABLE"; echo versions.json; } | zip -q -MM - -@) > "$OUTPUT"
 
 echo "bundle: $OUTPUT ($(du -h "$OUTPUT" | cut -f1))"

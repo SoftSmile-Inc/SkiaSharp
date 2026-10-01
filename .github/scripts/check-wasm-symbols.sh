@@ -125,9 +125,10 @@ else
     pass "$hb_renamed renamed sksharp_hb_* symbols"
 fi
 
-# 6. Guard on harfbuzz's unprotected C++ internals. This does not fix the gap
-#    documented in documentation/adr/0003-harfbuzz-cpp-internals-residual-risk.md
-#    -- it turns a silent, DEPS-bump-fragile risk into a build-time signal.
+# 6. Guard on harfbuzz's unrenamed C++ internals. libHarfBuzzSharp.a is not
+#    shipped for the Unity player (documentation/adr/0004-*), so this keeps the
+#    mechanism in a known state for its stage B rather than protecting a link;
+#    it still fails the build on purpose, so a drift is noticed when it happens.
 #    Until a baseline is recorded, this only reports.
 #    Renamed symbols start with sksharp_, so every _Z* name is unprotected.
 unprotected="$(grep -c '^_Z' <<< "$hb_symbols" || true)"
@@ -139,9 +140,10 @@ if [ -f "$BASELINE_FILE" ]; then
         fail "$BASELINE_FILE exists but holds no number"
     elif [ "$unprotected" -gt "$baseline" ]; then
         fail "unprotected mangled symbols grew: $unprotected > $baseline (baseline in $BASELINE_FILE).
-        Something widened the collision surface against a host's own harfbuzz --
-        a harfbuzz DEPS bump or a change of build flags.
-        See documentation/adr/0003-harfbuzz-cpp-internals-residual-risk.md before raising the baseline."
+        Something added unrenamed C++ symbols -- a harfbuzz DEPS bump or a change
+        of build flags. See documentation/ci/native-build-spec.md §5.2 and
+        documentation/adr/0004-webgl-harfbuzzsharp-binds-to-unity-harfbuzz.md
+        before raising the baseline."
     else
         pass "unprotected mangled symbols within baseline ($unprotected <= $baseline)"
     fi
@@ -154,7 +156,7 @@ else
     echo
     echo "         Do not confuse this number with the 1027 in ADR 0003 -- that one"
     echo "         is the intersection with a specific Unity editor's own harfbuzz"
-    echo "         archive, this one is the total in our archive."
+    echo "         archive, this one is the total in our archive (weak included)."
 fi
 
 echo
