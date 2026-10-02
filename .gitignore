@@ -314,4 +314,6 @@ fastlane/screenshots
 # See documentation/wasm-symbol-renaming.md
 native/wasm/libSkiaSharp/wasm_symbol_renames.h
 native/wasm/libHarfBuzzSharp/wasm_symbol_renames.h
+native/wasm/libHarfBuzzSharp/wasm_cxx_renames.h
+# no longer generated; ignored so a stale local copy is not committed by accident
 native/wasm/libHarfBuzzSharp/wasm_symbol_aliases.h

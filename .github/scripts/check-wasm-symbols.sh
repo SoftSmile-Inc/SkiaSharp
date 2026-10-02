@@ -15,9 +15,6 @@ IMAGE="${1:?usage: check-wasm-symbols.sh <image> <libSkiaSharp.a> <libHarfBuzzSh
 SKIA_ARCHIVE="${2:?missing libSkiaSharp.a}"
 HARFBUZZ_ARCHIVE="${3:?missing libHarfBuzzSharp.a}"
 
-# Overridable because CI takes the baseline from the workflow's own commit,
-# not from the ref being built (which may predate the file).
-BASELINE_FILE="${BASELINE_FILE:-documentation/ci/harfbuzz-symbol-baseline.txt}"
 failures=0
 
 fail() { echo "FAIL: $*" >&2; failures=$((failures + 1)); }
@@ -78,9 +75,14 @@ echo "== libHarfBuzzSharp.a =="
 hb_symbols="$(symbols "$HARFBUZZ_ARCHIVE")"
 echo "   $(wc -l <<< "$hb_symbols") global symbols"
 
-# 4. Every hb_* name the managed binding P/Invokes must still be exported under
-#    its original name, via the alias mechanism. If the aliases didn't land, the
-#    archive links fine and the player dies at startup instead.
+# The wasm libHarfBuzzSharp.a is linked next to Unity's own harfbuzz, so it must
+# define nothing under a name harfbuzz itself uses: in a static link two strong
+# definitions collide whatever their visibility, and weak ones silently merge
+# across the two versions. Everything is renamed with the sksharp_ prefix and
+# the managed binding's __Internal variant calls those names
+# (documentation/adr/0005-webgl-harfbuzz-isolation.md).
+
+# 4. Every name the managed binding P/Invokes has a renamed definition.
 #    Name extraction mirrors GetHarfBuzzManagedApiNames in native/wasm/build.cake:
 #    a bare hb_* identifier immediately followed by '(', ignoring the
 #    '// typedef ...' function-pointer comments whose '(' belongs to the syntax.
@@ -96,67 +98,35 @@ managed_api="$(
 if [ -z "$managed_api" ]; then
     fail "extracted no hb_* names from the managed binding -- did binding/HarfBuzzSharp/HarfBuzzApi*.cs move?"
 else
-    missing="$(LC_ALL=C comm -23 <(printf '%s\n' "$managed_api") <(printf '%s\n' "$hb_symbols"))"
+    missing="$(LC_ALL=C comm -23 <(awk '{ print "sksharp_" $0 }' <<< "$managed_api" | LC_ALL=C sort) <(printf '%s\n' "$hb_symbols"))"
     if [ -n "$missing" ]; then
-        fail "$(wc -l <<< "$missing") hb_* names P/Invoked by the binding are not exported:"
+        fail "$(wc -l <<< "$missing") names the binding P/Invokes have no renamed definition:"
         show <<< "$missing"
-        # An alias declared without extern "C" in a C++ translation unit is
-        # exported as _Z<len><name>v instead -- present, but not under the name
-        # the P/Invoke looks for.
-        mangled="$(
-            while read -r name; do printf '_Z%d%sv\n' "${#name}" "$name"; done <<< "$missing" \
-            | LC_ALL=C sort | LC_ALL=C comm -12 - <(printf '%s\n' "$hb_symbols")
-        )"
-        if [ -n "$mangled" ]; then
-            echo "        $(wc -l <<< "$mangled") of them are exported only C++-mangled, e.g. $(head -1 <<< "$mangled"):" >&2
-            echo "        the alias declarations have C++ linkage (missing extern \"C\")." >&2
-        fi
     else
-        pass "all $(wc -l <<< "$managed_api") P/Invoked hb_* names exported under their original names"
+        pass "all $(wc -l <<< "$managed_api") P/Invoked names defined as sksharp_hb_*"
     fi
 fi
 
-# 5. harfbuzz's own renaming actually ran. Check 4 alone would pass on a
-#    completely unrenamed archive, since every hb_* name is then present anyway.
-hb_renamed="$(grep -c '^sksharp_hb_' <<< "$hb_symbols" || true)"
-if [ "$hb_renamed" -eq 0 ]; then
-    fail "no sksharp_hb_* symbols in libHarfBuzzSharp.a -- the harfbuzz rename header did not take effect"
+# 5. Nothing under a plain hb_* name: such a definition either collides with the
+#    host's harfbuzz or, if weak, captures the host's own calls.
+plain_hb="$(grep '^hb_' <<< "$hb_symbols" || true)"
+if [ -n "$plain_hb" ]; then
+    fail "$(wc -l <<< "$plain_hb") symbols in libHarfBuzzSharp.a still have a plain hb_* name:"
+    show <<< "$plain_hb"
 else
-    pass "$hb_renamed renamed sksharp_hb_* symbols"
+    pass "no plain hb_* symbols"
 fi
 
-# 6. Guard on harfbuzz's unrenamed C++ internals. libHarfBuzzSharp.a is not
-#    shipped for the Unity player (documentation/adr/0004-*), so this keeps the
-#    mechanism in a known state for its stage B rather than protecting a link;
-#    it still fails the build on purpose, so a drift is noticed when it happens.
-#    Until a baseline is recorded, this only reports.
-#    Renamed symbols start with sksharp_, so every _Z* name is unprotected.
-unprotected="$(grep -c '^_Z' <<< "$hb_symbols" || true)"
-echo "   unprotected mangled C++ symbols (_Z*): $unprotected"
-
-if [ -f "$BASELINE_FILE" ]; then
-    baseline="$(grep -oE '^[0-9]+' "$BASELINE_FILE" | head -1 || true)"
-    if [ -z "$baseline" ]; then
-        fail "$BASELINE_FILE exists but holds no number"
-    elif [ "$unprotected" -gt "$baseline" ]; then
-        fail "unprotected mangled symbols grew: $unprotected > $baseline (baseline in $BASELINE_FILE).
-        Something added unrenamed C++ symbols -- a harfbuzz DEPS bump or a change
-        of build flags. See documentation/ci/native-build-spec.md §5.2 and
-        documentation/adr/0004-webgl-harfbuzzsharp-binds-to-unity-harfbuzz.md
-        before raising the baseline."
-    else
-        pass "unprotected mangled symbols within baseline ($unprotected <= $baseline)"
-    fi
+# 6. Every defined global symbol is renamed -- C names start with sksharp_, C++
+#    names carry it in their outermost scope (eg. _ZN11sksharp_AAT...). A name
+#    left over means the generated rename headers missed something: a harfbuzz
+#    update, a new mangling shape, or a flag change.
+unrenamed="$(grep -v 'sksharp_' <<< "$hb_symbols" || true)"
+if [ -n "$unrenamed" ]; then
+    fail "$(wc -l <<< "$unrenamed") symbols in libHarfBuzzSharp.a are not renamed:"
+    show <<< "$unrenamed"
 else
-    echo
-    echo "   NOTE: no baseline recorded yet. To start enforcing this guard, commit"
-    echo "         the measured value:"
-    echo
-    echo "           echo '$unprotected' > $BASELINE_FILE"
-    echo
-    echo "         Do not confuse this number with the 1027 in ADR 0003 -- that one"
-    echo "         is the intersection with a specific Unity editor's own harfbuzz"
-    echo "         archive, this one is the total in our archive (weak included)."
+    pass "every one of $(wc -l <<< "$hb_symbols") global symbols is renamed (sksharp_)"
 fi
 
 echo

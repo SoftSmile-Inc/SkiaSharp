@@ -168,7 +168,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   wasm:
-    name: wasm (libSkiaSharp.a)
+    name: wasm (libSkiaSharp.a, libHarfBuzzSharp.a)
     needs: prepare
     runs-on: ubuntu-latest
     # A cold build takes 7-12 minutes (spec §9); anything near an hour is a stall.
@@ -185,9 +185,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           path: .ci
-          sparse-checkout: |
-            .github/scripts
-            documentation/ci
+          sparse-checkout: .github/scripts
           persist-credentials: false
 
       # Only the two submodules the build needs; docs/ is irrelevant here.
@@ -227,7 +225,6 @@ jobs:
         env:
           EMSCRIPTEN_VERSION: ${{ needs.prepare.outputs.emscripten_version }}
           SUBPATH: ${{ needs.prepare.outputs.wasm_subpath }}
-          BASELINE_FILE: .ci/documentation/ci/harfbuzz-symbol-baseline.txt
         run: |
           # Without pipefail the step would take tee's exit status and a failing
           # check would pass silently. stderr goes along so FAIL lines reach
@@ -239,10 +236,6 @@ jobs:
             "output/native/wasm/libHarfBuzzSharp.a/${SUBPATH}/libHarfBuzzSharp.a" \
             2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
 
-      # libHarfBuzzSharp.a is built and checked (the build command produces it
-      # anyway, and the checks keep the rename mechanism honest), but not
-      # shipped: in the Unity player HarfBuzzSharp binds to Unity's own harfbuzz
-      # (documentation/adr/0004-*).
       - name: Collect slots
         env:
           SUBPATH: ${{ needs.prepare.outputs.wasm_subpath }}
@@ -250,6 +243,7 @@ jobs:
           set -euo pipefail
           mkdir -p slots/WebGL
           cp "output/native/wasm/libSkiaSharp.a/${SUBPATH}/libSkiaSharp.a" slots/WebGL/
+          cp "output/native/wasm/libHarfBuzzSharp.a/${SUBPATH}/libHarfBuzzSharp.a" slots/WebGL/
           ls -l slots/WebGL
 
       # Open question in the spec: how long a cold build actually takes and how
@@ -443,6 +437,23 @@ jobs:
               failed=1
             fi
           done
+          # The wasm libHarfBuzzSharp.a defines harfbuzz only under sksharp_
+          # names, so every P/Invoke of the __Internal variant must use them
+          # (documentation/adr/0005-webgl-harfbuzz-isolation.md). Names as in
+          # .github/scripts/check-wasm-symbols.sh.
+          s="$(strings -a artifacts/unity-webgl/HarfBuzzSharp.dll)"
+          expected="$(grep -hv '^[[:space:]]*// typedef' binding/HarfBuzzSharp/HarfBuzzApi.cs binding/HarfBuzzSharp/HarfBuzzApi.generated.cs \
+            | { grep -hoP '\bhb_[A-Za-z0-9_]*\b(?=\s*\()' || true; } | LC_ALL=C sort -u)"
+          missing="$(LC_ALL=C comm -23 <(awk '{ print "sksharp_" $0 }' <<< "$expected" | LC_ALL=C sort) <(LC_ALL=C sort -u <<< "$s"))"
+          if [ -z "$expected" ]; then
+            echo "FAIL: extracted no hb_* names from the managed binding" >> "$report"
+            failed=1
+          elif [ -n "$missing" ]; then
+            echo "FAIL: HarfBuzzSharp.dll lacks $(wc -l <<< "$missing") sksharp_hb_* entry points, e.g. $(head -1 <<< "$missing")" >> "$report"
+            failed=1
+          else
+            echo "ok:   HarfBuzzSharp.dll binds all $(wc -l <<< "$expected") P/Invokes to sksharp_hb_* entry points" >> "$report"
+          fi
           tee -a "$GITHUB_STEP_SUMMARY" < "$report"
           exit "$failed"
 
@@ -562,7 +573,7 @@ jobs:
           set -euo pipefail
           name="skiasharp-unity-${BUNDLE_VERSION}.zip"
           asset="dist/$name"
-          notes="Bundle \`${BUNDLE_VERSION}\` for the Unity project. Unpack into \`Assets/ExternalPlugins/\` and delete the files listed in \`removedSlots\` of \`versions.json\`, with their \`.meta\` (today: \`WebGL/libHarfBuzzSharp.a\`, see \`documentation/adr/0004-webgl-harfbuzzsharp-binds-to-unity-harfbuzz.md\`). Details: \`documentation/ci/native-build-spec.md\`."
+          notes="Bundle \`${BUNDLE_VERSION}\` for the Unity project. Unpack into \`Assets/ExternalPlugins/\` and delete the files listed in \`removedSlots\` of \`versions.json\`, if any, with their \`.meta\`. Details: \`documentation/ci/native-build-spec.md\`."
           # A published bundle version is immutable: the Unity project may
           # already have consumed it. A draft left by a failed attempt is not.
           if info="$(gh release view "$TAG" --json isDraft,assets 2>/dev/null)"; then

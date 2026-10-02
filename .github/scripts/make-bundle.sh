@@ -60,18 +60,15 @@ v_skia="$(nuget_version SkiaSharp)"
 v_hb="$(nuget_version HarfBuzzSharp)"
 
 # Slots that earlier drops put into Assets/ExternalPlugins/ and that must now
-# be deleted there, .meta included. Listed in versions.json as removedSlots so
-# the transfer job deletes exactly these and nothing else -- the same
-# directories also hold plugins that are not ours.
-#
-# WebGL/libHarfBuzzSharp.a: in the Unity WebGL player HarfBuzzSharp binds to
-# the harfbuzz Unity itself links in, and a second copy collides with it at
-# link time (documentation/adr/0004-*).
-REMOVED_SLOTS="WebGL/libHarfBuzzSharp.a"
+# be deleted there, .meta included (space-separated). Listed in versions.json
+# as removedSlots so the transfer job deletes exactly these and nothing else --
+# the same directories also hold plugins that are not ours. None today.
+REMOVED_SLOTS=""
 
 # slot path <TAB> source description
 SLOT_TABLE="$(cat <<EOF
 WebGL/libSkiaSharp.a	fork
+WebGL/libHarfBuzzSharp.a	fork
 WebGL/SkiaSharp.dll	fork
 WebGL/HarfBuzzSharp.dll	fork
 x86_64/libHarfBuzzSharp.so	fork
