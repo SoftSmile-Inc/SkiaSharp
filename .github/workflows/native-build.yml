@@ -11,9 +11,11 @@ name: Native build
 #
 # Two trees are in play. The target ref (prepare resolves it to one commit,
 # which every job builds) is whatever the operator asked for -- typically a
-# release branch that does not carry this CI. The CI tooling
-# (.github/scripts, documentation/ci) always comes from the commit this
-# workflow file was taken from, checked out into .ci/.
+# release branch that does not carry this CI. The CI tooling (.github/scripts)
+# always comes from the commit this workflow file was taken from, checked out
+# into .ci/. The product changes the checks expect (the harfbuzz isolation in
+# native/wasm/build.cake and the HarfBuzzSharp entry-point prefix) must be in
+# the target ref itself.
 
 on:
   workflow_dispatch:
@@ -287,7 +289,7 @@ jobs:
             output/native/wasm/**
             native/wasm/libSkiaSharp/wasm_symbol_renames.h
             native/wasm/libHarfBuzzSharp/wasm_symbol_renames.h
-            native/wasm/libHarfBuzzSharp/wasm_symbol_aliases.h
+            native/wasm/libHarfBuzzSharp/wasm_cxx_renames.h
 
   linux:
     name: linux (libHarfBuzzSharp.so)
@@ -442,8 +444,11 @@ jobs:
           # (documentation/adr/0005-webgl-harfbuzz-isolation.md). Names as in
           # .github/scripts/check-wasm-symbols.sh.
           s="$(strings -a artifacts/unity-webgl/HarfBuzzSharp.dll)"
-          expected="$(grep -hv '^[[:space:]]*// typedef' binding/HarfBuzzSharp/HarfBuzzApi.cs binding/HarfBuzzSharp/HarfBuzzApi.generated.cs \
-            | { grep -hoP '\bhb_[A-Za-z0-9_]*\b(?=\s*\()' || true; } | LC_ALL=C sort -u)"
+          expected=""
+          if [ -f binding/HarfBuzzSharp/HarfBuzzApi.cs ] && [ -f binding/HarfBuzzSharp/HarfBuzzApi.generated.cs ]; then
+            expected="$(grep -hv '^[[:space:]]*// typedef' binding/HarfBuzzSharp/HarfBuzzApi.cs binding/HarfBuzzSharp/HarfBuzzApi.generated.cs \
+              | { grep -hoP '\bhb_[A-Za-z0-9_]*\b(?=\s*\()' || true; } | LC_ALL=C sort -u)"
+          fi
           missing="$(LC_ALL=C comm -23 <(awk '{ print "sksharp_" $0 }' <<< "$expected" | LC_ALL=C sort) <(LC_ALL=C sort -u <<< "$s"))"
           if [ -z "$expected" ]; then
             echo "FAIL: extracted no hb_* names from the managed binding" >> "$report"

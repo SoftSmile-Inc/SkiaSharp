@@ -42,8 +42,9 @@ FilePath SYMBOL_RENAMES_HEADER = MakeAbsolute(ROOT_PATH.CombineWithFilePath("nat
 
 // HarfBuzz is renamed completely (see 'generate-wasm-harfbuzz-symbol-renames' below): its C API
 // and its C++ internals alike, so that no symbol it defines can collide with a host application's
-// own harfbuzz -- Unity's WebGL player always carries one. Nothing is exported under an hb_* name;
-// the managed HarfBuzzSharp binding's __Internal variant calls the sksharp_hb_* names directly.
+// own harfbuzz -- Unity's WebGL player always carries one. Nothing is exported under an hb_* name,
+// so with renaming on this archive works only with a HarfBuzzSharp built to call the sksharp_hb_*
+// names -- today the Unity WebGL __Internal variant (HARFBUZZ_ENTRY_POINT_PREFIX).
 // See documentation/wasm-symbol-renaming.md and documentation/adr/0005-webgl-harfbuzz-isolation.md.
 FilePath HARFBUZZ_SYMBOL_RENAMES_HEADER = MakeAbsolute(ROOT_PATH.CombineWithFilePath("native/wasm/libHarfBuzzSharp/wasm_symbol_renames.h"));
 FilePath HARFBUZZ_CXX_RENAMES_HEADER = MakeAbsolute(ROOT_PATH.CombineWithFilePath("native/wasm/libHarfBuzzSharp/wasm_cxx_renames.h"));
@@ -190,38 +191,52 @@ SortedSet<string> GetHarfBuzzMacroShadowedNames()
 // '_Z25hb_aat_layout_compile_mapPK...' -> 'hb_aat_layout_compile_map'). Renaming that one source
 // identifier renames the symbol and everything nested in it. Returns null for names under ::std,
 // which are not harfbuzz's to rename (any harfbuzz type in their template arguments is renamed
-// anyway). Anything else this does not understand throws, so a harfbuzz update that brings a new
-// mangling shape fails the build instead of quietly leaving symbols unrenamed.
+// anyway). Anything else this does not understand -- including runtime and compiler-generated
+// scopes such as __cxxabiv1 or _GLOBAL__N_1, which are not harfbuzz's -- throws, so a harfbuzz
+// update that brings a new mangling shape fails the build instead of quietly leaving symbols
+// unrenamed or renaming something it must not.
 string GetTopLevelCxxName(string mangled)
 {
-    bool At(int at, string s) => string.CompareOrdinal(mangled, at, s, 0, s.Length) == 0;
+    Exception Unknown() => new Exception($"Cannot determine the top-level C++ name of '{mangled}' -- extend GetTopLevelCxxName for this mangling.");
+    char At(int at) => at < mangled.Length ? mangled[at] : '\0';
+    bool Has(int at, string s) => at + s.Length <= mangled.Length && string.CompareOrdinal(mangled, at, s, 0, s.Length) == 0;
+    int After(char c, int from) {
+        var found = from < mangled.Length ? mangled.IndexOf(c, from) : -1;
+        if (found < 0)
+            throw Unknown();
+        return found + 1;
+    }
+
     var i = 2; // past "_Z"
     while (true) {
         // vtable, typeinfo, typeinfo name, guard variable: followed by an ordinary name
-        if (At(i, "TV") || At(i, "TI") || At(i, "TS") || At(i, "GV")) { i += 2; continue; }
+        if (Has(i, "TV") || Has(i, "TI") || Has(i, "TS") || Has(i, "GV")) { i += 2; continue; }
         // thunks: Th <offset> _ <encoding>, Tv <offset> _ <offset> _ <encoding>
-        if (At(i, "Th")) { i = mangled.IndexOf('_', i + 2) + 1; continue; }
-        if (At(i, "Tv")) { i = mangled.IndexOf('_', mangled.IndexOf('_', i + 2) + 1) + 1; continue; }
+        if (Has(i, "Th")) { i = After('_', i + 2); continue; }
+        if (Has(i, "Tv")) { i = After('_', After('_', i + 2)); continue; }
         // local entity: Z <function encoding> E <entity> -- the function's name is what counts
-        if (mangled[i] == 'Z') { i++; continue; }
+        if (At(i) == 'Z') { i++; continue; }
         break;
     }
-    if (mangled[i] == 'N') {
+    if (At(i) == 'N') {
         i++;
-        while ("rVK".IndexOf(mangled[i]) >= 0) i++;
-        if (mangled[i] == 'R' || mangled[i] == 'O') i++;
+        while (At(i) == 'r' || At(i) == 'V' || At(i) == 'K') i++;
+        if (At(i) == 'R' || At(i) == 'O') i++;
     }
-    if (mangled[i] == 'L' && char.IsDigit(mangled[i + 1]))
+    if (At(i) == 'L' && char.IsDigit(At(i + 1)))
         i++;
-    if (At(i, "St") || At(i, "Sa") || At(i, "Sb") || At(i, "Ss") || At(i, "Si") || At(i, "So") || At(i, "Sd"))
+    if (Has(i, "St") || Has(i, "Sa") || Has(i, "Sb") || Has(i, "Ss") || Has(i, "Si") || Has(i, "So") || Has(i, "Sd"))
         return null;
-    if (char.IsDigit(mangled[i])) {
-        var start = i;
-        while (char.IsDigit(mangled[i])) i++;
-        var length = int.Parse(mangled.Substring(start, i - start));
-        return mangled.Substring(i, length);
-    }
-    throw new Exception($"Cannot determine the top-level C++ name of '{mangled}' -- extend GetTopLevelCxxName for this mangling.");
+    if (!char.IsDigit(At(i)))
+        throw Unknown();
+    var start = i;
+    while (char.IsDigit(At(i))) i++;
+    if (!int.TryParse(mangled.Substring(start, i - start), out var length) || length <= 0 || i + length > mangled.Length)
+        throw Unknown();
+    var name = mangled.Substring(i, length);
+    if (name.StartsWith("__", StringComparison.Ordinal) || name.StartsWith("_GLOBAL__", StringComparison.Ordinal) || name.Contains('$'))
+        throw Unknown();
+    return name;
 }
 
 // Reads an archive's global, defined symbols -- ie. the ones that would participate in a
@@ -384,8 +399,8 @@ Task("generate-wasm-harfbuzz-symbol-renames")
     if (symbols.Count == 0)
         throw new Exception("No symbols were discovered for harfbuzz -- something is wrong with the discovery build.");
 
-    var plainSymbols = new SortedSet<string>(symbols.Where(s => !s.StartsWith("_Z")), StringComparer.Ordinal);
-    var mangledSymbols = symbols.Where(s => s.StartsWith("_Z")).ToList();
+    var plainSymbols = new SortedSet<string>(symbols.Where(s => !s.StartsWith("_Z", StringComparison.Ordinal)), StringComparer.Ordinal);
+    var mangledSymbols = symbols.Where(s => s.StartsWith("_Z", StringComparison.Ordinal)).ToList();
 
     // See GetHarfBuzzMacroShadowedNames -- these can't be renamed by textual substitution, so
     // they get '#pragma redefine_extname' instead of a #define.
@@ -400,15 +415,19 @@ Task("generate-wasm-harfbuzz-symbol-renames")
         if (name != null)
             cxxNames.Add(name);
     }
+    // A name in both sets would be #defined by two headers -- and if it is one of the extname
+    // renames, the #define would undo exactly what the pragma is there to avoid. Neither happens
+    // today; if a harfbuzz update makes it happen, decide by hand.
     var overlap = cxxNames.Intersect(plainSymbols).ToList();
     if (overlap.Count > 0)
-        throw new Exception($"Names that are both a C symbol and an outer C++ name cannot be renamed twice: {string.Join(", ", overlap)}");
+        throw new Exception($"Names that are both a plain symbol and an outer C++ name would be renamed by two headers: {string.Join(", ", overlap)}");
 
-    // The __Internal variant of the managed binding calls sksharp_<name> for every one of these.
+    // The __Internal variant of the managed binding calls sksharp_<name> for every one of these;
+    // a missing one would only surface as an undefined symbol when Unity links the player.
     var managedApiNames = GetHarfBuzzManagedApiNames();
     var missing = managedApiNames.Where(n => !plainSymbols.Contains(n)).ToList();
     if (missing.Count > 0)
-        Warning($"{missing.Count} harfbuzz function(s) referenced by the managed HarfBuzzSharp binding were not found in this build's public API (eg. disabled by a feature define) and will have no {SYMBOL_RENAME_PREFIX} definition: {string.Join(", ", missing)}");
+        throw new Exception($"{missing.Count} harfbuzz function(s) the managed HarfBuzzSharp binding calls are not in this build's public API (eg. disabled by a feature define), so they would have no {SYMBOL_RENAME_PREFIX} definition: {string.Join(", ", missing)}");
 
     var renameLines = new List<string> {
         "// Generated by the 'generate-wasm-harfbuzz-symbol-renames' cake target. DO NOT EDIT BY HAND.",

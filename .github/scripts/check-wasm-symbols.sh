@@ -38,6 +38,14 @@ symbols() {
         | LC_ALL=C sort -u
 }
 
+# Names an archive references but does not define ("U name" lines).
+undefined_symbols() {
+    docker run --rm --volume "$PWD:/work" --workdir /work "$IMAGE" \
+        emnm --undefined-only "$1" \
+        | awk 'NF == 2 && $1 == "U" { print $2 }' \
+        | LC_ALL=C sort -u
+}
+
 echo "== libSkiaSharp.a =="
 skia_symbols="$(symbols "$SKIA_ARCHIVE")"
 echo "   $(wc -l <<< "$skia_symbols") global symbols"
@@ -86,13 +94,15 @@ echo "   $(wc -l <<< "$hb_symbols") global symbols"
 #    Name extraction mirrors GetHarfBuzzManagedApiNames in native/wasm/build.cake:
 #    a bare hb_* identifier immediately followed by '(', ignoring the
 #    '// typedef ...' function-pointer comments whose '(' belongs to the syntax.
-managed_api="$(
-    grep -hv '^[[:space:]]*// typedef' \
-        binding/HarfBuzzSharp/HarfBuzzApi.cs \
-        binding/HarfBuzzSharp/HarfBuzzApi.generated.cs \
-    | { grep -hoP '\bhb_[A-Za-z0-9_]*\b(?=\s*\()' || true; } \
-    | LC_ALL=C sort -u
-)"
+binding_files=(binding/HarfBuzzSharp/HarfBuzzApi.cs binding/HarfBuzzSharp/HarfBuzzApi.generated.cs)
+managed_api=""
+if [ -f "${binding_files[0]}" ] && [ -f "${binding_files[1]}" ]; then
+    managed_api="$(
+        grep -hv '^[[:space:]]*// typedef' "${binding_files[@]}" \
+        | { grep -hoP '\bhb_[A-Za-z0-9_]*\b(?=\s*\()' || true; } \
+        | LC_ALL=C sort -u
+    )"
+fi
 # If the binding files ever move, extraction would silently yield nothing and
 # this check would pass while verifying absolutely nothing.
 if [ -z "$managed_api" ]; then
@@ -118,15 +128,31 @@ else
 fi
 
 # 6. Every defined global symbol is renamed -- C names start with sksharp_, C++
-#    names carry it in their outermost scope (eg. _ZN11sksharp_AAT...). A name
-#    left over means the generated rename headers missed something: a harfbuzz
-#    update, a new mangling shape, or a flag change.
+#    names carry it (eg. _ZN11sksharp_AAT..., or inside the template arguments of
+#    a std:: instantiation over a harfbuzz type), so no name can be shared with
+#    another harfbuzz. A name left over means the generated rename headers
+#    missed something: a harfbuzz update, a new mangling shape, or a flag change.
 unrenamed="$(grep -v 'sksharp_' <<< "$hb_symbols" || true)"
 if [ -n "$unrenamed" ]; then
     fail "$(wc -l <<< "$unrenamed") symbols in libHarfBuzzSharp.a are not renamed:"
     show <<< "$unrenamed"
 else
     pass "every one of $(wc -l <<< "$hb_symbols") global symbols is renamed (sksharp_)"
+fi
+
+# 7. The archive references nothing harfbuzz-owned it does not define itself.
+#    An unrenamed undefined hb_* name or harfbuzz C++ name would bind silently to
+#    the host's harfbuzz; a dangling sksharp_* name would fail only in the host's
+#    link. Allowed: libc/libc++/emscripten names, ::std and operator new/delete.
+hb_undefined="$(undefined_symbols "$HARFBUZZ_ARCHIVE")"
+foreign="$(grep -E '^_?hb_|sksharp_' <<< "$hb_undefined" || true)"
+foreign_cxx="$(grep '^_Z' <<< "$hb_undefined" | grep -vE '^_Z(N[rVKRO]*)?S[tabsiod]|^_Z(nw|na|dl|da)' || true)"
+foreign="$(printf '%s\n%s\n' "$foreign" "$foreign_cxx" | grep -v '^$' || true)"
+if [ -n "$foreign" ]; then
+    fail "libHarfBuzzSharp.a references $(wc -l <<< "$foreign") harfbuzz-owned names it does not define:"
+    show <<< "$foreign"
+else
+    pass "no undefined harfbuzz references ($(grep -c . <<< "$hb_undefined" || true) undefined names, all libc/libc++/emscripten)"
 fi
 
 echo
