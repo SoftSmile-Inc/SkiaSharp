@@ -1,6 +1,11 @@
 # В WebGL HarfBuzzSharp работает на harfbuzz Unity, свой не поставляем
 
-Статус: accepted (2026-10-01). Заменяет [ADR 0003](0003-harfbuzz-cpp-internals-residual-risk.md).
+Статус: accepted (2026-10-01). Заменяет [ADR 0003](0003-harfbuzz-cpp-internals-residual-risk.md). Будет заменён
+[ADR 0005](0005-webgl-harfbuzz-isolation.md) после его приёмки в Unity.
+
+> Этот ADR описывает бандлы ветки `ci/native-build` до коммита `3b98b84a8`. Начиная с него CI собирает
+> бандлы по [ADR 0005](0005-webgl-harfbuzz-isolation.md): `libHarfBuzzSharp.a` снова в бандле, а
+> инструкции ниже об его удалении к таким бандлам не относятся.
 
 В бандле для WebGL нет `libHarfBuzzSharp.a`. `HarfBuzzSharp.dll` в варианте `__Internal` вызывает
 `hb_*`, которые предоставляет копия harfbuzz, уже входящая в WebGL-плеер Unity. Архив по-прежнему
@@ -72,23 +77,11 @@ Plain-алиасы `hb_*` в нашем архиве опасны при люб�
   Сторож из спецификации §5.2 продолжает считать `_Z*` в непоставляемом архиве — как ориентир для
   этапа B.
 
-## Этап B (не принят)
+## Этап B
 
-Полная изоляция нашей копии, чтобы HarfBuzzSharp работал на своём harfbuzz 8.3.1 рядом с Unity:
-
-- в варианте `__Internal` биндинг вызывает переименованные имена: `EntryPoint = "sksharp_hb_…"`
-  через генератор биндингов. IL2CPP Unity 6000.3.8f1 учитывает `EntryPoint` для `__Internal` —
-  проверено его же конвертером;
-- top-level C++-идентификаторы harfbuzz (`OT`, `AAT`, `hb_buffer_t`, …) переименовываются
-  генерируемыми макросами по тому же принципу, что и C-имена; `::std` не затрагивается, поэтому
-  проблема `std::hash` из ADR 0003 не возникает;
-- пять функций, которые harfbuzz сам затеняет макросами (`hb_color_get_*`,
-  `hb_glyph_info_get_glyph_flags`), получают `sksharp_`-имена;
-- plain-алиасы `hb_*` не генерируются.
-
-Прототип против настоящего архива Unity: 0 общих имён, 0 `duplicate symbol` при любом порядке
-линковки. Реальной сборкой emsdk и в плеере не проверен; размер wasm вырастет на вторую копию
-harfbuzz.
+Полная изоляция нашей копии, чтобы HarfBuzzSharp работал на своём harfbuzz 8.3.1 рядом с Unity, —
+[ADR 0005](0005-webgl-harfbuzz-isolation.md). Реализована в ветке `ci/native-build`; пока она не
+принята в Unity, в `vision` действует этот ADR.
 
 ## Условия пересмотра
 

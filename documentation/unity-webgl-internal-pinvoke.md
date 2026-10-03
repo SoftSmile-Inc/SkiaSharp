@@ -31,10 +31,19 @@ generated P/Invoke in `SkiaApi.generated.cs` / `HarfBuzzApi.generated.cs`.
 that, when the MSBuild property `SkiaSharpUnityWebGLInternal` is `true`,
 appends the `SKIASHARP_UNITY_WEBGL_INTERNAL` preprocessor define, which
 switches that constant to `"__Internal"` — mirroring the existing
-`__IOS__`/`__TVOS__` branch used for embedded Apple frameworks. No other
-source changes are needed — `USE_LIBRARY_IMPORT` (which picks `LibraryImport`
-vs. `DllImport` syntax) is unaffected and already applies for any net7.0+
-TFM.
+`__IOS__`/`__TVOS__` branch used for embedded Apple frameworks.
+`USE_LIBRARY_IMPORT` (which picks `LibraryImport` vs. `DllImport` syntax) is
+unaffected and already applies for any net7.0+ TFM.
+
+HarfBuzzSharp needs one more thing, because Unity's WebGL player links its own
+harfbuzz: the wasm `libHarfBuzzSharp.a` exports harfbuzz only under
+`sksharp_`-renamed names. `HarfBuzzApi.cs` therefore also defines
+`HARFBUZZ_ENTRY_POINT_PREFIX` (`"sksharp_"` under
+`SKIASHARP_UNITY_WEBGL_INTERNAL`, `""` otherwise), and the binding generator
+writes `EntryPoint = HARFBUZZ_ENTRY_POINT_PREFIX + "hb_x"` on every generated
+P/Invoke (the `entryPointPrefix` option in `binding/libHarfBuzzSharp.json`).
+So the `__Internal` HarfBuzzSharp.dll and that archive are a pair; see
+`documentation/adr/0005-webgl-harfbuzz-isolation.md`.
 
 This is a dedicated MSBuild property rather than passing `DefineConstants`
 directly on the command line: `-p:DefineConstants=...` sets a *global*
@@ -73,7 +82,8 @@ already correct in the assembly.
 ## Scope
 
 Only `binding/SkiaSharp/SkiaApi.cs` and `binding/HarfBuzzSharp/HarfBuzzApi.cs`
-were changed. The sibling assemblies `SkiaSharp.Skottie`, `SkiaSharp.SceneGraph`,
+were changed for the module name (plus the HarfBuzzSharp entry-point prefix
+described above, which touches the generator and `HarfBuzzApi.generated.cs`). The sibling assemblies `SkiaSharp.Skottie`, `SkiaSharp.SceneGraph`,
 and `SkiaSharp.Resources` have the identical `SKIA`-style constant pattern in
 their own `*Api.cs` files; the same one-line change extends to them if a
 project needs those assemblies in Unity WebGL too.

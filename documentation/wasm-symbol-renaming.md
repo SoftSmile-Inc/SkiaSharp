@@ -4,13 +4,16 @@ An opt-in build-time mechanism that avoids duplicate-symbol linker errors when t
 
 ## TL;DR
 
+> **Current state (2026-10-02), stage B — `documentation/adr/0005-webgl-harfbuzz-isolation.md`.** harfbuzz is renamed completely and nothing is exported under an `hb_*` name: plain symbols via `#define hb_x sksharp_hb_x`, the few names harfbuzz shadows with its own function-like macro via `#pragma redefine_extname`, and every C++ symbol via a `#define` of its outermost name (`OT`, `AAT`, `hb_buffer_t`, …) generated into `native/wasm/libHarfBuzzSharp/wasm_cxx_renames.h`. There are no aliases any more (`wasm_symbol_aliases.h` is gone); the Unity WebGL `__Internal` variant of HarfBuzzSharp calls the `sksharp_hb_*` names directly (`EntryPoint`). §5 and §6 below describe the earlier alias-based design and its gap, kept for the record.
+
+
 - **Problem:** `libSkiaSharp.a`/`libHarfBuzzSharp.a` (wasm) and a host app's own freetype2/libjpeg-turbo/libpng/harfbuzz export the same global C symbols. Statically linking both into one binary fails (or silently picks the wrong copy).
 - **Solution:** an opt-in flag (`wasmRenameThirdPartySymbols`) renames every global symbol these libraries export, via a generated `#define` header force-included into the whole wasm build. The header is regenerated automatically as part of the same build invocation that uses it, so it cannot go stale relative to the checkout, the feature flags, or the emscripten toolchain being built.
   - harfbuzz needs a second mechanism on top of this, because it's C++ (mostly unreachable by textual renaming) and because its public API — unlike freetype2/libjpeg-turbo/libpng — is also what the managed `HarfBuzzSharp` binding P/Invokes directly. See [§5](#5-harfbuzz-hiding--aliasing-instead-of-a-plain-rename).
   - **Known gap, confirmed in production:** harfbuzz's C++ internals (template instantiations, constructors/destructors, other vague-linkage symbols) are *not* actually renamed or hidden by this mechanism, despite §5's original claim to the contrary. This has been reproduced against a real Unity WebGL host and traced to a root cause with no clean fix found yet. See [§6](#6-known-gap-harfbuzzs-c-internals-are-not-actually-protected).
   - **Superseded for the Unity WebGL player (2026-10-01):** a second harfbuzz copy cannot coexist with Unity's in a static link (hidden visibility does not help), so the fork no longer ships wasm `libHarfBuzzSharp.a` for Unity; HarfBuzzSharp binds to Unity's own harfbuzz there. See the [§6](#6-known-gap-harfbuzzs-c-internals-are-not-actually-protected) correction and `documentation/adr/0004-webgl-harfbuzzsharp-binds-to-unity-harfbuzz.md`.
 - **Off by default** — standard SkiaSharp wasm builds (and every wasm job in the current CI matrix) are unaffected.
-- Relevant files: `native/wasm/build.cake`, `native/wasm/libSkiaSharp/wasm_symbol_renames.h` (generated), `native/wasm/libHarfBuzzSharp/wasm_symbol_renames.h` (generated), `native/wasm/libHarfBuzzSharp/wasm_hb_extern_visibility.h`, `native/wasm/libHarfBuzzSharp/wasm_symbol_aliases.h` (generated), `scripts/Docker/wasm/build-local.sh`.
+- Relevant files: `native/wasm/build.cake`, `native/wasm/libSkiaSharp/wasm_symbol_renames.h` (generated), `native/wasm/libHarfBuzzSharp/wasm_symbol_renames.h` (generated), `native/wasm/libHarfBuzzSharp/wasm_hb_extern_visibility.h`, `native/wasm/libHarfBuzzSharp/wasm_cxx_renames.h` (generated; `wasm_symbol_aliases.h` before stage B), `scripts/Docker/wasm/build-local.sh`.
 
 ## 1. The problem being solved
 
@@ -68,6 +71,8 @@ already regenerates both `native/wasm/libSkiaSharp/wasm_symbol_renames.h` and `n
 ```
 
 ## 5. harfbuzz: hiding + aliasing instead of a plain rename
+
+*Superseded by stage B (2026-10-02): no aliases, full rename including C++ — see the note at the top and ADR 0005.*
 
 harfbuzz needs a different (heavier) mechanism than freetype2/libjpeg-turbo/libpng, for two reasons specific to it:
 

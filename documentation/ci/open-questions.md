@@ -1,9 +1,10 @@
 # Вопросы по удалённой сборке нативных библиотек SkiaSharp
 
 > **Исторический документ** — опросник до согласования спецификации. Актуальное состояние —
-> [спецификация](native-build-spec.md) и [ADR](../adr/). В частности, wasm `libHarfBuzzSharp.a`
-> больше не поставляется, а объяснение «коллизии нет из-за dead-code elimination» неверно —
-> см. [ADR 0004](../adr/0004-webgl-harfbuzzsharp-binds-to-unity-harfbuzz.md).
+> [спецификация](native-build-spec.md) и [ADR](../adr/). В частности, механизм harfbuzz для wasm
+> переделан (полное переименование, без алиасов), а объяснение «коллизии нет из-за dead-code
+> elimination» неверно — см. [ADR 0004](../adr/0004-webgl-harfbuzzsharp-binds-to-unity-harfbuzz.md) и
+> [ADR 0005](../adr/0005-webgl-harfbuzz-isolation.md).
 
 Мы настраиваем CI для форка `SoftSmile-Inc/SkiaSharp`, чтобы сборка wasm/нативных библиотек
 перестала быть ручной операцией на чьей-то машине. Цель текущего этапа — согласованная

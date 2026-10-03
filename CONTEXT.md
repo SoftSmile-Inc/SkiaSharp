@@ -1,9 +1,8 @@
 # SoftSmile SkiaSharp Fork
 
 Форк `mono/SkiaSharp` → `SoftSmile-Inc/SkiaSharp`, существующий ради правок, которые позволяют
-статически линковать нативный SkiaSharp внутрь Unity-плеера, не сталкиваясь с копиями
-freetype2/libjpeg-turbo/libpng, которые Unity несёт сам. HarfBuzzSharp в WebGL работает на
-harfbuzz самой Unity (ADR 0004). Этот файл — только глоссарий;
+статически линковать SkiaSharp и HarfBuzzSharp внутрь Unity-плеера, не сталкиваясь с копиями
+freetype2/libjpeg-turbo/libpng/harfbuzz, которые Unity несёт сам. Этот файл — только глоссарий;
 решения живут в `documentation/adr/`, спецификация CI — в `documentation/ci/native-build-spec.md`.
 
 ## Language
@@ -12,9 +11,10 @@ harfbuzz самой Unity (ADR 0004). Этот файл — только гло�
 
 **Форк-сборка**:
 Артефакт, скомпилированный из `SoftSmile-Inc/SkiaSharp`, потому что stock-версия для этой роли
-непригодна. Их четыре: wasm `libSkiaSharp.a`, linux-x64 `libHarfBuzzSharp.so`, и managed
-`SkiaSharp.dll` / `HarfBuzzSharp.dll` в варианте `__Internal`. wasm `libHarfBuzzSharp.a` собирается,
-но не поставляется: в WebGL используется **harfbuzz Unity**.
+непригодна. Их пять: wasm `libSkiaSharp.a`, wasm `libHarfBuzzSharp.a`, linux-x64
+`libHarfBuzzSharp.so`, и managed `SkiaSharp.dll` / `HarfBuzzSharp.dll` в варианте `__Internal`.
+wasm `libHarfBuzzSharp.a` и `HarfBuzzSharp.dll` для WebGL — пара: архив определяет harfbuzz только
+под именами `sksharp_`, сборка вызывает именно их.
 _Avoid_: наша сборка, кастомный SkiaSharp
 
 **Stock-натив**:
@@ -96,14 +96,14 @@ _Avoid_: коммит сборки (двусмысленно)
 _Avoid_: тесты, валидация
 
 **Дыра C++-интерналов**:
-Подтверждённое расхождение: C++-символы harfbuzz не переименовываются механизмом форка, а
-`-fvisibility=hidden` от конфликтов при статической линковке не защищает. Против harfbuzz Unity
-конфликтуют 125 strong-символов (weak молча сливаются); вместе с 311 plain-алиасами `hb_*` это
-причина, по которой наш wasm-harfbuzz не поставляется (ADR 0004).
+Расхождение прежнего механизма: C++-символы harfbuzz не переименовывались, а `-fvisibility=hidden`
+от конфликтов при статической линковке не защищает. Против harfbuzz Unity конфликтовали 125
+strong-символов и 311 plain-алиасов `hb_*` (ADR 0004). Закрывается полным переименованием
+(ADR 0005).
 _Avoid_: известная проблема, баг harfbuzz
 
 **harfbuzz Unity**:
 Копия harfbuzz (8.0.1 в Unity 6000.3.8f1), которую Unity линкует в WebGL-плеер для собственного
-рендера текста. В WebGL HarfBuzzSharp работает на ней: P/Invoke `hb_*` разрешаются в неё, своя
-копия рядом с ней конфликтует.
+рендера текста. Наша копия живёт рядом с ней, не пересекаясь ни одним именем (ADR 0005); пока
+ADR 0005 не принят, HarfBuzzSharp в `vision` работает на ней (ADR 0004).
 _Avoid_: системный harfbuzz, встроенный harfbuzz
