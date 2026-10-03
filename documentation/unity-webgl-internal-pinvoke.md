@@ -38,8 +38,9 @@ unaffected and already applies for any net7.0+ TFM.
 HarfBuzzSharp needs one more thing, because Unity's WebGL player links its own
 harfbuzz: the wasm `libHarfBuzzSharp.a` exports harfbuzz only under
 `sksharp_`-renamed names. `HarfBuzzApi.cs` therefore also defines
-`HARFBUZZ_ENTRY_POINT_PREFIX` (`"sksharp_"` under
-`SKIASHARP_UNITY_WEBGL_INTERNAL`, `""` otherwise), and the binding generator
+`HARFBUZZ_ENTRY_POINT_PREFIX` (`"sksharp_"` when the MSBuild property
+`SkiaSharpHarfBuzzRenamedSymbols` is `true`, `""` otherwise; it defaults to
+`true` whenever `SkiaSharpUnityWebGLInternal` is), and the binding generator
 writes `EntryPoint = HARFBUZZ_ENTRY_POINT_PREFIX + "hb_x"` on every generated
 P/Invoke (the `entryPointPrefix` option in `binding/libHarfBuzzSharp.json`).
 So the `__Internal` HarfBuzzSharp.dll and that archive are a pair; see

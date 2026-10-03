@@ -44,7 +44,7 @@ FilePath SYMBOL_RENAMES_HEADER = MakeAbsolute(ROOT_PATH.CombineWithFilePath("nat
 // and its C++ internals alike, so that no symbol it defines can collide with a host application's
 // own harfbuzz -- Unity's WebGL player always carries one. Nothing is exported under an hb_* name,
 // so with renaming on this archive works only with a HarfBuzzSharp built to call the sksharp_hb_*
-// names -- today the Unity WebGL __Internal variant (HARFBUZZ_ENTRY_POINT_PREFIX).
+// names: -p:SkiaSharpHarfBuzzRenamedSymbols=true, the default for the Unity WebGL variant.
 // See documentation/wasm-symbol-renaming.md and documentation/adr/0005-webgl-harfbuzz-isolation.md.
 FilePath HARFBUZZ_SYMBOL_RENAMES_HEADER = MakeAbsolute(ROOT_PATH.CombineWithFilePath("native/wasm/libHarfBuzzSharp/wasm_symbol_renames.h"));
 FilePath HARFBUZZ_CXX_RENAMES_HEADER = MakeAbsolute(ROOT_PATH.CombineWithFilePath("native/wasm/libHarfBuzzSharp/wasm_cxx_renames.h"));

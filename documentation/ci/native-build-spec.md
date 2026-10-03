@@ -126,9 +126,11 @@ SDK — 8.0.x. `setup-dotnet` его только устанавливает, а
 поэтому джоба дописывает версию в `global.json` рабочей копии (в репозитории версия SDK не
 закреплена) и проверяет `dotnet --version`.
 
-Под `SkiaSharpUnityWebGLInternal` HarfBuzzSharp вызывает `sksharp_hb_*` вместо `hb_*`: генератор
-биндингов пишет `EntryPoint = HARFBUZZ_ENTRY_POINT_PREFIX + "hb_x"`, а константа равна `"sksharp_"`
-только в этом варианте (§2, ADR 0005).
+С `SkiaSharpHarfBuzzRenamedSymbols=true` HarfBuzzSharp вызывает `sksharp_hb_*` вместо `hb_*`:
+генератор биндингов пишет `EntryPoint = HARFBUZZ_ENTRY_POINT_PREFIX + "hb_x"`, а константа равна
+`"sksharp_"` только при этом свойстве (§2, ADR 0005). Для `SkiaSharpUnityWebGLInternal` оно включено
+по умолчанию; джоба передаёт его явно, чтобы пара с архивом, собранным с
+`--wasmRenameThirdPartySymbols=true`, была видна в одном месте.
 
 Свойство `SkiaSharpUnityWebGLInternal` передаётся именно как свойство, а не через
 `-p:DefineConstants=...` — глобальное присвоение `DefineConstants` ломает собственные
@@ -282,8 +284,8 @@ SkiaSharp 2.88) с резолвящимся 3.119.2 остаётся вопро�
 ## 6. Публикация
 
 Релизная сборка (по тегу) прикладывает бандл к GitHub Release этого тега. Бандл — один архив:
-файлы, разложенные по именам слотов, плюс `versions.json`. Тег должен иметь вид
-`v<база>-ss.<N>`, где `<база>` совпадает с версией SkiaSharp в `scripts/VERSIONS.txt`
+файлы, разложенные по именам слотов, плюс `versions.json`. Тег должен иметь ровно вид
+`v<база>-ss.<N>` — без суффиксов вроде `-rc1`, потому что релиз постоянный, — где `<база>` совпадает с версией SkiaSharp в `scripts/VERSIONS.txt`
 помеченного коммита; иначе `prepare` отказывает за секунды. Опубликованный бандл не
 перезаписывается: если у релиза уже есть архив, публикация падает — нужен новый `N`.
 

@@ -38,13 +38,28 @@ symbols() {
         | LC_ALL=C sort -u
 }
 
-# Names an archive references but does not define ("U name" lines).
+# The weak ones among an archive's global, defined symbols (types W and V).
+weak_symbols() {
+    docker run --rm --volume "$PWD:/work" --workdir /work "$IMAGE" \
+        emnm --defined-only --extern-only "$1" \
+        | awk 'NF == 3 && $1 ~ /^[0-9a-fA-F]+$/ && $2 ~ /^[WVwv]$/ { print $3 }' \
+        | LC_ALL=C sort -u
+}
+
+# Names an archive references but does not define: "U name", and the weak
+# "w name" / "v name" -- a weak reference binds to a host's definition just the
+# same.
 undefined_symbols() {
     docker run --rm --volume "$PWD:/work" --workdir /work "$IMAGE" \
         emnm --undefined-only "$1" \
-        | awk 'NF == 2 && $1 == "U" { print $2 }' \
+        | awk 'NF == 2 && $1 ~ /^[Uwv]$/ { print $2 }' \
         | LC_ALL=C sort -u
 }
+
+# C++ names that belong to the C++ runtime rather than to harfbuzz: ::std
+# (including its vtables/typeinfo), operator new/delete, the __cxxabiv1
+# type_info classes, and typeinfo of builtin and pointer types (_ZTIi, _ZTIPKc).
+CXX_RUNTIME_RE='^_Z(T[VIS])?(N[rVKRO]*)?S[tabsiod]|^_Z(nw|na|dl|da)|^_ZT[VIS]N10__cxxabiv1|^_ZT[IS][PKRO]*([a-z]|D[a-z])'
 
 echo "== libSkiaSharp.a =="
 skia_symbols="$(symbols "$SKIA_ARCHIVE")"
@@ -132,21 +147,28 @@ fi
 #    a std:: instantiation over a harfbuzz type), so no name can be shared with
 #    another harfbuzz. A name left over means the generated rename headers
 #    missed something: a harfbuzz update, a new mangling shape, or a flag change.
-unrenamed="$(grep -v 'sksharp_' <<< "$hb_symbols" || true)"
+#    The one exception is a weak C++ runtime instantiation over non-harfbuzz
+#    types (eg. std::vector<int>): it is not harfbuzz's, and a weak definition
+#    merges with any other copy instead of colliding.
+hb_weak="$(weak_symbols "$HARFBUZZ_ARCHIVE")"
+not_prefixed="$(grep -v 'sksharp_' <<< "$hb_symbols" || true)"
+runtime_weak="$(LC_ALL=C comm -12 <(grep -E "$CXX_RUNTIME_RE" <<< "$not_prefixed" || true) <(printf '%s\n' "$hb_weak"))"
+unrenamed="$(LC_ALL=C comm -23 <(printf '%s\n' "$not_prefixed") <(printf '%s\n' "$runtime_weak") | grep -v '^$' || true)"
 if [ -n "$unrenamed" ]; then
     fail "$(wc -l <<< "$unrenamed") symbols in libHarfBuzzSharp.a are not renamed:"
     show <<< "$unrenamed"
 else
-    pass "every one of $(wc -l <<< "$hb_symbols") global symbols is renamed (sksharp_)"
+    pass "every one of $(wc -l <<< "$hb_symbols") global symbols is renamed (sksharp_)$([ -n "$runtime_weak" ] && echo ", apart from $(wc -l <<< "$runtime_weak") weak C++ runtime instantiations")"
 fi
 
 # 7. The archive references nothing harfbuzz-owned it does not define itself.
 #    An unrenamed undefined hb_* name or harfbuzz C++ name would bind silently to
 #    the host's harfbuzz; a dangling sksharp_* name would fail only in the host's
-#    link. Allowed: libc/libc++/emscripten names, ::std and operator new/delete.
+#    link. Allowed: libc/libc++/emscripten names and the C++ runtime
+#    (CXX_RUNTIME_RE). Weak references count: they bind just the same.
 hb_undefined="$(undefined_symbols "$HARFBUZZ_ARCHIVE")"
 foreign="$(grep -E '^_?hb_|sksharp_' <<< "$hb_undefined" || true)"
-foreign_cxx="$(grep '^_Z' <<< "$hb_undefined" | grep -vE '^_Z(N[rVKRO]*)?S[tabsiod]|^_Z(nw|na|dl|da)' || true)"
+foreign_cxx="$(grep '^_Z' <<< "$hb_undefined" | grep -vE "$CXX_RUNTIME_RE" || true)"
 foreign="$(printf '%s\n%s\n' "$foreign" "$foreign_cxx" | grep -v '^$' || true)"
 if [ -n "$foreign" ]; then
     fail "libHarfBuzzSharp.a references $(wc -l <<< "$foreign") harfbuzz-owned names it does not define:"

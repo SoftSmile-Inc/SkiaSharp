@@ -115,7 +115,9 @@ jobs:
           # produce a release, and a branch name is not a version.
           if [ "$EVENT_NAME" = push ] && [ "$GITHUB_REF_TYPE" = tag ]; then
             # v3.119.2-ss.1 -> 3.119.2-ss.1; the base must be what is built.
-            if [[ $GITHUB_REF_NAME =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-ss\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] \
+            # Exactly this form: a release is permanent and the Unity project
+            # may consume it, so no suffixed pre-release or debug tags.
+            if [[ $GITHUB_REF_NAME =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-ss\.[0-9]+$ ]] \
                && [ "${BASH_REMATCH[1]}" = "$base" ]; then
               bundle="${GITHUB_REF_NAME#v}"
               is_release=true
@@ -406,12 +408,17 @@ jobs:
       # netstandard2.1, not net8.0. Needs nothing from output/native.
       # SkiaSharpUnityWebGLInternal is passed as a property rather than through
       # -p:DefineConstants, which would clobber the project's own defines.
+      # SkiaSharpHarfBuzzRenamedSymbols pairs HarfBuzzSharp with the wasm
+      # libHarfBuzzSharp.a built above with --wasmRenameThirdPartySymbols=true;
+      # it is the default for the WebGL variant, set here so the pairing is
+      # explicit (SkiaSharp ignores it).
       - name: Build
         run: |
           set -euo pipefail
           for project in binding/SkiaSharp/SkiaSharp.csproj binding/HarfBuzzSharp/HarfBuzzSharp.csproj; do
             dotnet build "$project" -f netstandard2.1 -c Release \
-              -p:SkiaSharpUnityWebGLInternal=true -o artifacts/unity-webgl
+              -p:SkiaSharpUnityWebGLInternal=true -p:SkiaSharpHarfBuzzRenamedSymbols=true \
+              -o artifacts/unity-webgl
           done
 
       # Unity's WebGL backend statically links everything into one module, so a
