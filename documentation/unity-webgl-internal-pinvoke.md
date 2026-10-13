@@ -31,10 +31,17 @@ generated P/Invoke in `SkiaApi.generated.cs` / `HarfBuzzApi.generated.cs`.
 that, when the MSBuild property `SkiaSharpUnityWebGLInternal` is `true`,
 appends the `SKIASHARP_UNITY_WEBGL_INTERNAL` preprocessor define, which
 switches that constant to `"__Internal"` — mirroring the existing
-`__IOS__`/`__TVOS__` branch used for embedded Apple frameworks. No other
-source changes are needed — `USE_LIBRARY_IMPORT` (which picks `LibraryImport`
-vs. `DllImport` syntax) is unaffected and already applies for any net7.0+
-TFM.
+`__IOS__`/`__TVOS__` branch used for embedded Apple frameworks.
+`USE_LIBRARY_IMPORT` (which picks `LibraryImport` vs. `DllImport` syntax) is
+unaffected and already applies for any net7.0+ TFM.
+
+HarfBuzzSharp also has to call the `sksharp_`-renamed harfbuzz that the wasm
+`libHarfBuzzSharp.a` exports (see `documentation/wasm-symbol-renaming.md`).
+The binding generator writes `EntryPoint = HARFBUZZ_ENTRY_POINT_PREFIX + "hb_x"`
+on every P/Invoke (the `entryPointPrefix` option in
+`binding/libHarfBuzzSharp.json`), and `HarfBuzzApi.cs` sets the constant to
+`"sksharp_"` when the MSBuild property `SkiaSharpHarfBuzzRenamedSymbols` is
+`true` (the default with `SkiaSharpUnityWebGLInternal`), `""` otherwise.
 
 This is a dedicated MSBuild property rather than passing `DefineConstants`
 directly on the command line: `-p:DefineConstants=...` sets a *global*
@@ -73,7 +80,9 @@ already correct in the assembly.
 ## Scope
 
 Only `binding/SkiaSharp/SkiaApi.cs` and `binding/HarfBuzzSharp/HarfBuzzApi.cs`
-were changed. The sibling assemblies `SkiaSharp.Skottie`, `SkiaSharp.SceneGraph`,
+were changed for the module name (the HarfBuzzSharp entry-point prefix above
+also touches the generator and `HarfBuzzApi.generated.cs`). The sibling
+assemblies `SkiaSharp.Skottie`, `SkiaSharp.SceneGraph`,
 and `SkiaSharp.Resources` have the identical `SKIA`-style constant pattern in
 their own `*Api.cs` files; the same one-line change extends to them if a
 project needs those assemblies in Unity WebGL too.

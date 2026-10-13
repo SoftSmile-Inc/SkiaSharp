@@ -21,6 +21,15 @@
   <PropertyGroup Condition="'$(SkiaSharpUnityWebGLInternal)' == 'true'">
     <DefineConstants>$(DefineConstants);SKIASHARP_UNITY_WEBGL_INTERNAL</DefineConstants>
   </PropertyGroup>
+  <!-- `-p:SkiaSharpHarfBuzzRenamedSymbols=true` makes every P/Invoke call sksharp_hb_*, as exported by a wasm
+       libHarfBuzzSharp built with wasmRenameThirdPartySymbols. On by default for the Unity WebGL variant.
+       See documentation/wasm-symbol-renaming.md. -->
+  <PropertyGroup Condition="'$(SkiaSharpHarfBuzzRenamedSymbols)' == '' and '$(SkiaSharpUnityWebGLInternal)' == 'true'">
+    <SkiaSharpHarfBuzzRenamedSymbols>true</SkiaSharpHarfBuzzRenamedSymbols>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(SkiaSharpHarfBuzzRenamedSymbols)' == 'true'">
+    <DefineConstants>$(DefineConstants);SKIASHARP_HARFBUZZ_RENAMED_SYMBOLS</DefineConstants>
+  </PropertyGroup>
   <ItemGroup Condition="'$(BuildingInsideVisualStudio)' != 'true'">
     <ProjectReference Include="..\HarfBuzzSharp.NativeAssets.Android\HarfBuzzSharp.NativeAssets.Android.csproj" Condition="$(TargetFramework.Contains('-android'))" />
     <ProjectReference Include="..\HarfBuzzSharp.NativeAssets.iOS\HarfBuzzSharp.NativeAssets.iOS.csproj" Condition="$(TargetFramework.Contains('-ios'))" />
