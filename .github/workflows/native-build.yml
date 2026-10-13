@@ -357,15 +357,17 @@ jobs:
           dotnet --version | tee -a "$GITHUB_STEP_SUMMARY"
           case "$(dotnet --version)" in 8.0.*) ;; *) echo "SDK pin did not take effect" >&2; exit 1 ;; esac
 
-      # netstandard2.1, not net8.0. -p:DefineConstants would clobber the
-      # project's own defines, hence the properties. SkiaSharpHarfBuzzRenamedSymbols
-      # is the default for the WebGL variant; passed to make the pairing with
-      # the renamed libHarfBuzzSharp.a explicit (SkiaSharp ignores it).
+      # netstandard2.1, not net8.0. TargetFrameworks is narrowed too: since
+      # 3.119.4 the projects also list net10.0 and -android on Linux, which SDK 8
+      # cannot restore. -p:DefineConstants would clobber the project's own
+      # defines, hence the properties. SkiaSharpHarfBuzzRenamedSymbols is the
+      # default for the WebGL variant; passed to make the pairing with the
+      # renamed libHarfBuzzSharp.a explicit (SkiaSharp ignores it).
       - name: Build
         run: |
           set -euo pipefail
           for project in binding/SkiaSharp/SkiaSharp.csproj binding/HarfBuzzSharp/HarfBuzzSharp.csproj; do
-            dotnet build "$project" -f netstandard2.1 -c Release \
+            dotnet build "$project" -f netstandard2.1 -p:TargetFrameworks=netstandard2.1 -c Release \
               -p:SkiaSharpUnityWebGLInternal=true -p:SkiaSharpHarfBuzzRenamedSymbols=true \
               -o artifacts/unity-webgl
           done
