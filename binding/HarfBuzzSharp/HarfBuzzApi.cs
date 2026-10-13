@@ -14,12 +14,8 @@ namespace HarfBuzzSharp
 		private const string HARFBUZZ = "libHarfBuzzSharp";
 #endif
 
-		// A libHarfBuzzSharp built with --wasmRenameThirdPartySymbols exports
-		// harfbuzz only under renamed sksharp_* names, so it can sit next to a
-		// host's own harfbuzz (Unity WebGL carries one). The binding must then
-		// call those names: SkiaSharpHarfBuzzRenamedSymbols, on by default for
-		// the Unity WebGL variant. Everywhere else the native names are the
-		// plain hb_* ones. See documentation/adr/0005-webgl-harfbuzz-isolation.md.
+		// A wasm libHarfBuzzSharp built with --wasmRenameThirdPartySymbols exports
+		// harfbuzz only as sksharp_hb_*. See documentation/wasm-symbol-renaming.md.
 #if SKIASHARP_HARFBUZZ_RENAMED_SYMBOLS
 		private const string HARFBUZZ_ENTRY_POINT_PREFIX = "sksharp_";
 #else

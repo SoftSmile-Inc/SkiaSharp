@@ -1,22 +1,13 @@
 #!/usr/bin/env bash
 #
-# Assembles the bundle: checks that every expected slot is present, writes
-# versions.json, and zips the result.
-#
-# The slot table below is the definition of what a bundle contains. A slot path
-# is where the file lands inside Assets/ExternalPlugins/ of the Unity project;
-# the platform a native plugin applies to is decided by that directory name and
-# by the .meta file already committed next to it, which this bundle never
-# touches.
-#
-# See documentation/ci/native-build-spec.md §2 and §4.
+# Assembles the bundle: checks that every slot is present, writes versions.json
+# and zips the result. A slot is a path inside Assets/ExternalPlugins/ of the
+# Unity project; the .meta files committed there are never touched.
 #
 # Usage: make-bundle.sh <slots-dir> <output-zip>
-# Environment: BUNDLE_VERSION, BUILD_REF, BUILD_COMMIT, CI_COMMIT,
-#              EMSCRIPTEN_VERSION, EMSCRIPTEN_FEATURES, UNITY_VERSION
-# BUILD_COMMIT is the commit that was built, CI_COMMIT the one this script and
-# the workflow came from; they differ when a release branch is built without
-# carrying the CI.
+# Environment: BUNDLE_VERSION, BUILD_REF, BUILD_COMMIT (built commit),
+#              CI_COMMIT (workflow commit), EMSCRIPTEN_VERSION,
+#              EMSCRIPTEN_FEATURES, UNITY_VERSION
 
 set -euo pipefail
 
@@ -58,12 +49,6 @@ src_skia_hb="$(stock SkiaSharp.HarfBuzz)"
 src_hb="$(stock HarfBuzzSharp)"
 v_skia="$(nuget_version SkiaSharp)"
 v_hb="$(nuget_version HarfBuzzSharp)"
-
-# Slots that earlier drops put into Assets/ExternalPlugins/ and that must now
-# be deleted there, .meta included (space-separated). Listed in versions.json
-# as removedSlots so the transfer job deletes exactly these and nothing else --
-# the same directories also hold plugins that are not ours. None today.
-REMOVED_SLOTS=""
 
 # slot path <TAB> source description
 SLOT_TABLE="$(cat <<EOF
@@ -114,12 +99,10 @@ jq -n \
     --arg emscriptenFeatures "$EMSCRIPTEN_FEATURES" \
     --arg unity "$UNITY_VERSION" \
     --argjson files "$files_json" \
-    --arg removed "$REMOVED_SLOTS" \
     '{bundle: $bundle, ref: $ref, commit: $commit, ciCommit: $ciCommit, builtAt: $builtAt,
       skiaSharp: $skiaSharp, harfBuzzSharp: $harfBuzzSharp,
       emscripten: $emscripten, emscriptenFeatures: $emscriptenFeatures,
-      unity: $unity, files: $files,
-      removedSlots: ($removed | split(" ") | map(select(. != "")))}' \
+      unity: $unity, files: $files}' \
     > "$SLOTS/versions.json"
 
 echo "versions.json:"

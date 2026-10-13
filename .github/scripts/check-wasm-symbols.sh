@@ -1,11 +1,7 @@
 #!/usr/bin/env bash
 #
-# Verifies that the symbol-renaming machinery actually did its job in a freshly
-# built pair of wasm archives. These checks are cheap and deterministic; without
-# them a broken rename surfaces as a player that fails at startup, half an hour
-# of manual work later.
-#
-# See documentation/ci/native-build-spec.md §5.1 and §5.2.
+# Verifies that symbol renaming worked in a freshly built pair of wasm archives
+# (documentation/wasm-symbol-renaming.md).
 #
 # Usage: check-wasm-symbols.sh <docker-image> <libSkiaSharp.a> <libHarfBuzzSharp.a>
 
@@ -98,13 +94,6 @@ echo "== libHarfBuzzSharp.a =="
 hb_symbols="$(symbols "$HARFBUZZ_ARCHIVE")"
 echo "   $(wc -l <<< "$hb_symbols") global symbols"
 
-# The wasm libHarfBuzzSharp.a is linked next to Unity's own harfbuzz, so it must
-# define nothing under a name harfbuzz itself uses: in a static link two strong
-# definitions collide whatever their visibility, and weak ones silently merge
-# across the two versions. Everything is renamed with the sksharp_ prefix and
-# the managed binding's __Internal variant calls those names
-# (documentation/adr/0005-webgl-harfbuzz-isolation.md).
-
 # 4. Every name the managed binding P/Invokes has a renamed definition.
 #    Name extraction mirrors GetHarfBuzzManagedApiNames in native/wasm/build.cake:
 #    a bare hb_* identifier immediately followed by '(', ignoring the
@@ -132,24 +121,11 @@ else
     fi
 fi
 
-# 5. Nothing under a plain hb_* name: such a definition either collides with the
-#    host's harfbuzz or, if weak, captures the host's own calls.
-plain_hb="$(grep '^hb_' <<< "$hb_symbols" || true)"
-if [ -n "$plain_hb" ]; then
-    fail "$(wc -l <<< "$plain_hb") symbols in libHarfBuzzSharp.a still have a plain hb_* name:"
-    show <<< "$plain_hb"
-else
-    pass "no plain hb_* symbols"
-fi
-
-# 6. Every defined global symbol is renamed -- C names start with sksharp_, C++
-#    names carry it (eg. _ZN11sksharp_AAT..., or inside the template arguments of
-#    a std:: instantiation over a harfbuzz type), so no name can be shared with
-#    another harfbuzz. A name left over means the generated rename headers
-#    missed something: a harfbuzz update, a new mangling shape, or a flag change.
-#    The one exception is a weak C++ runtime instantiation over non-harfbuzz
-#    types (eg. std::vector<int>): it is not harfbuzz's, and a weak definition
-#    merges with any other copy instead of colliding.
+# 5. Every defined global symbol is renamed, so none can be shared with the
+#    host's harfbuzz: C names start with sksharp_, C++ names carry it
+#    (_ZN11sksharp_AAT..., or in the template arguments of a std:: instantiation).
+#    Allowed: weak C++ runtime instantiations over non-harfbuzz types
+#    (eg. std::vector<int>), which merge with any other copy instead of colliding.
 hb_weak="$(weak_symbols "$HARFBUZZ_ARCHIVE")"
 not_prefixed="$(grep -v 'sksharp_' <<< "$hb_symbols" || true)"
 runtime_weak="$(LC_ALL=C comm -12 <(grep -E "$CXX_RUNTIME_RE" <<< "$not_prefixed" || true) <(printf '%s\n' "$hb_weak"))"
@@ -161,11 +137,10 @@ else
     pass "every one of $(wc -l <<< "$hb_symbols") global symbols is renamed (sksharp_)$([ -n "$runtime_weak" ] && echo ", apart from $(wc -l <<< "$runtime_weak") weak C++ runtime instantiations")"
 fi
 
-# 7. The archive references nothing harfbuzz-owned it does not define itself.
-#    An unrenamed undefined hb_* name or harfbuzz C++ name would bind silently to
-#    the host's harfbuzz; a dangling sksharp_* name would fail only in the host's
-#    link. Allowed: libc/libc++/emscripten names and the C++ runtime
-#    (CXX_RUNTIME_RE). Weak references count: they bind just the same.
+# 6. The archive references no harfbuzz name it does not define itself: an
+#    unrenamed one would bind silently to the host's harfbuzz, a dangling
+#    sksharp_* one would fail only in the host's link. Allowed: libc, libc++,
+#    emscripten and the C++ runtime (CXX_RUNTIME_RE).
 hb_undefined="$(undefined_symbols "$HARFBUZZ_ARCHIVE")"
 foreign="$(grep -E '^_?hb_|sksharp_' <<< "$hb_undefined" || true)"
 foreign_cxx="$(grep '^_Z' <<< "$hb_undefined" | grep -vE "$CXX_RUNTIME_RE" || true)"

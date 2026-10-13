@@ -1,27 +1,18 @@
 name: Native build
 
-# Builds the bundle consumed by the Unity project: the wasm/linux/managed
-# artefacts produced from this fork, plus the stock natives pulled from
-# nuget.org, under one version.
+# Builds the library bundle for the Unity project: see documentation/ci/native-build.md.
 #
-# Specification: documentation/ci/native-build-spec.md
+# No pull_request trigger: this is a public fork.
 #
-# There is deliberately no pull_request trigger: this is a public fork, and
-# nothing here should run on code from an outside contributor.
-#
-# Two trees are in play. The target ref (prepare resolves it to one commit,
-# which every job builds) is whatever the operator asked for -- typically a
-# release branch that does not carry this CI. The CI tooling (.github/scripts)
-# always comes from the commit this workflow file was taken from, checked out
-# into .ci/. The product changes the checks expect (the harfbuzz isolation in
-# native/wasm/build.cake and the HarfBuzzSharp entry-point prefix) must be in
-# the target ref itself.
+# The target ref is resolved once to a commit that every job builds; the CI
+# scripts (.github/scripts) come from the workflow's own commit, checked out
+# into .ci/, so the target ref does not need to carry the CI.
 
 on:
   workflow_dispatch:
     inputs:
       ref:
-        description: 'Branch or tag of this fork to build (new SkiaSharp versions arrive as cherry-picks onto a new release branch, so there is no fixed branch)'
+        description: 'Branch or tag of this fork to build'
         required: true
         type: string
       emscripten_version:
@@ -175,7 +166,7 @@ jobs:
     name: wasm (libSkiaSharp.a, libHarfBuzzSharp.a)
     needs: prepare
     runs-on: ubuntu-latest
-    # A cold build takes 7-12 minutes (spec §9); anything near an hour is a stall.
+    # A cold build takes 7-12 minutes.
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -196,26 +187,13 @@ jobs:
       - name: Initialise skia and depot_tools
         run: git submodule update --init --depth 1 externals/skia externals/depot_tools
 
-      # Samples disk use during the build, so Report cost can give the peak
-      # rather than whatever is left at the end. A build adds about 5 GB, well
-      # within the 14 GB a GitHub-hosted runner guarantees, so nothing is freed
-      # beforehand (spec §9).
-      - name: Start disk sampler
-        run: |
-          df --output=used,avail -BM / | tail -1 > "$RUNNER_TEMP/df-start.txt"
-          nohup bash -c 'while :; do df --output=used -BM / | tail -1 | tr -dc 0-9; echo; sleep 15; done' \
-            > "$RUNNER_TEMP/df.log" 2>/dev/null &
-
-      # This command is fixed by the specification and must not change.
+      # This command is fixed and must not change.
       - name: Build
         env:
           EMSCRIPTEN_VERSION: ${{ needs.prepare.outputs.emscripten_version }}
           EMSCRIPTEN_FEATURES: ${{ needs.prepare.outputs.emscripten_features }}
         run: |
           set -euo pipefail
-          # SECONDS counts from the start of this step's shell. Recorded even
-          # when the build fails, so a failed run still says how far it got.
-          trap 'echo "BUILD_SECONDS=$SECONDS" >> "$GITHUB_ENV"' EXIT
           bash scripts/Docker/wasm/build-local.sh "$EMSCRIPTEN_VERSION" \
             --wasmRenameThirdPartySymbols=true \
             --emscriptenFeatures="$EMSCRIPTEN_FEATURES"
@@ -250,26 +228,6 @@ jobs:
           cp "output/native/wasm/libHarfBuzzSharp.a/${SUBPATH}/libHarfBuzzSharp.a" slots/WebGL/
           ls -l slots/WebGL
 
-      # Open question in the spec: how long a cold build actually takes and how
-      # much disk it needs. Recorded here so the first run answers it.
-      - name: Report cost
-        if: always()
-        run: |
-          start="$(cat "$RUNNER_TEMP/df-start.txt" 2>/dev/null || true)"
-          peak="$(sort -n "$RUNNER_TEMP/df.log" 2>/dev/null | tail -1 || true)"
-          {
-            echo "### wasm build cost"
-            echo
-            echo "- wall clock: ${BUILD_SECONDS:-unknown} s"
-            echo "- disk used / available before build (MB): ${start:-unknown}"
-            echo "- peak disk used during build: ${peak:-unknown} MB"
-            echo "- disk after build:"
-            echo '```'
-            df -h /
-            du -sh externals/skia/out externals/skia output 2>/dev/null || true
-            echo '```'
-          } | tee -a "$GITHUB_STEP_SUMMARY"
-
       - uses: actions/upload-artifact@v4
         with:
           name: slots-wasm
@@ -277,9 +235,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # A failed check is otherwise investigable only by rebuilding for hours.
-      # Generated headers are gitignored; externals/skia/out is several GB and
-      # deliberately left out.
+      # For investigating a failed check without a rebuild.
       - name: Keep build output on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -310,8 +266,7 @@ jobs:
 
       # The pinned depot_tools uses bare @functools.lru_cache, which Python 3.7
       # in the debian:10 image rejects. native/linux/build.cake patches it only
-      # in the libSkiaSharp task, which this job does not run; upstream never
-      # notices because its Default target runs libSkiaSharp first.
+      # in the libSkiaSharp task, which this job does not run.
       - name: Patch depot_tools for Python 3.7
         run: |
           set -euo pipefail
@@ -342,9 +297,7 @@ jobs:
           cp output/native/linux/x64/libHarfBuzzSharp.so slots/x86_64/
           ls -l slots/x86_64
 
-      # The reason this .so is built here at all. With the flag, calls between
-      # harfbuzz's own functions bind locally, so no hb_* call goes through the
-      # PLT; without it the stock build has dozens of such entries.
+      # With the flag no hb_* call goes through the PLT; the stock build has dozens.
       - name: Check -Bsymbolic-functions took effect
         run: |
           set -euo pipefail
@@ -392,9 +345,8 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      # setup-dotnet only installs SDK 8; without a pin the newest SDK already
-      # on the runner wins. The repo's global.json has no version, so add one
-      # here, for this job only.
+      # setup-dotnet only installs SDK 8; without a pin the newest SDK on the
+      # runner wins, and the repo's global.json has no version.
       - name: Pin SDK 8
         run: |
           set -euo pipefail
@@ -405,13 +357,10 @@ jobs:
           dotnet --version | tee -a "$GITHUB_STEP_SUMMARY"
           case "$(dotnet --version)" in 8.0.*) ;; *) echo "SDK pin did not take effect" >&2; exit 1 ;; esac
 
-      # netstandard2.1, not net8.0. Needs nothing from output/native.
-      # SkiaSharpUnityWebGLInternal is passed as a property rather than through
-      # -p:DefineConstants, which would clobber the project's own defines.
-      # SkiaSharpHarfBuzzRenamedSymbols pairs HarfBuzzSharp with the wasm
-      # libHarfBuzzSharp.a built above with --wasmRenameThirdPartySymbols=true;
-      # it is the default for the WebGL variant, set here so the pairing is
-      # explicit (SkiaSharp ignores it).
+      # netstandard2.1, not net8.0. -p:DefineConstants would clobber the
+      # project's own defines, hence the properties. SkiaSharpHarfBuzzRenamedSymbols
+      # is the default for the WebGL variant; passed to make the pairing with
+      # the renamed libHarfBuzzSharp.a explicit (SkiaSharp ignores it).
       - name: Build
         run: |
           set -euo pipefail
@@ -421,9 +370,6 @@ jobs:
               -o artifacts/unity-webgl
           done
 
-      # Unity's WebGL backend statically links everything into one module, so a
-      # P/Invoke module name other than "__Internal" makes it look for a native
-      # module that does not exist. Verify the switch actually took effect.
       # strings is captured first: piping it into grep -q under pipefail fails
       # on SIGPIPE whenever grep matches early.
       - name: Check __Internal took effect
@@ -446,10 +392,8 @@ jobs:
               failed=1
             fi
           done
-          # The wasm libHarfBuzzSharp.a defines harfbuzz only under sksharp_
-          # names, so every P/Invoke of the __Internal variant must use them
-          # (documentation/adr/0005-webgl-harfbuzz-isolation.md). Names as in
-          # .github/scripts/check-wasm-symbols.sh.
+          # Every P/Invoke must call the sksharp_ name the wasm archive defines.
+          # Names extracted as in .github/scripts/check-wasm-symbols.sh.
           s="$(strings -a artifacts/unity-webgl/HarfBuzzSharp.dll)"
           expected=""
           if [ -f binding/HarfBuzzSharp/HarfBuzzApi.cs ] && [ -f binding/HarfBuzzSharp/HarfBuzzApi.generated.cs ]; then
@@ -558,8 +502,6 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  # Release bundles are what versions.json in the Unity project points at,
-  # so they are kept indefinitely. Dev builds stay as run artefacts only.
   # The only job with a write token: no checkout, no repository code.
   publish:
     name: Publish release
@@ -585,9 +527,8 @@ jobs:
           set -euo pipefail
           name="skiasharp-unity-${BUNDLE_VERSION}.zip"
           asset="dist/$name"
-          notes="Bundle \`${BUNDLE_VERSION}\` for the Unity project. Unpack into \`Assets/ExternalPlugins/\` and delete the files listed in \`removedSlots\` of \`versions.json\`, if any, with their \`.meta\`. Details: \`documentation/ci/native-build-spec.md\`."
-          # A published bundle version is immutable: the Unity project may
-          # already have consumed it. A draft left by a failed attempt is not.
+          notes="Bundle \`${BUNDLE_VERSION}\` for the Unity project: unpack into \`Assets/ExternalPlugins/\`. See \`documentation/ci/native-build.md\`."
+          # A published bundle is never replaced; a draft left by a failed attempt is.
           if info="$(gh release view "$TAG" --json isDraft,assets 2>/dev/null)"; then
             if jq -e --arg n "$name" '(.isDraft | not) and any(.assets[]; .name == $n)' <<< "$info" >/dev/null; then
               echo "::error::release $TAG already has $name; cut a new -ss.N tag instead of replacing it"

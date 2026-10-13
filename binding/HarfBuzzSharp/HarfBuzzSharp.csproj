@@ -21,13 +21,9 @@
   <PropertyGroup Condition="'$(SkiaSharpUnityWebGLInternal)' == 'true'">
     <DefineConstants>$(DefineConstants);SKIASHARP_UNITY_WEBGL_INTERNAL</DefineConstants>
   </PropertyGroup>
-  <!-- `-p:SkiaSharpHarfBuzzRenamedSymbols=true` makes every P/Invoke call the sksharp_-renamed
-       harfbuzz names. This is the managed half of a pair: the native half is a libHarfBuzzSharp
-       built with the wasmRenameThirdPartySymbols cake argument on, which exports harfbuzz only under those
-       names. On by default for the Unity WebGL variant, which is always shipped with that archive;
-       set it explicitly to false to pair __Internal with a plain-name archive, or to true for any
-       other consumer of the renamed archive.
-       See documentation/adr/0005-webgl-harfbuzz-isolation.md. -->
+  <!-- `-p:SkiaSharpHarfBuzzRenamedSymbols=true` makes every P/Invoke call sksharp_hb_*, as exported by a wasm
+       libHarfBuzzSharp built with wasmRenameThirdPartySymbols. On by default for the Unity WebGL variant.
+       See documentation/wasm-symbol-renaming.md. -->
   <PropertyGroup Condition="'$(SkiaSharpHarfBuzzRenamedSymbols)' == '' and '$(SkiaSharpUnityWebGLInternal)' == 'true'">
     <SkiaSharpHarfBuzzRenamedSymbols>true</SkiaSharpHarfBuzzRenamedSymbols>
   </PropertyGroup>
