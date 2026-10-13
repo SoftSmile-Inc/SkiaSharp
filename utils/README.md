@@ -27,6 +27,10 @@ Available configs:
 - `libSkiaSharp.Resources.json` - Resources
 - `libHarfBuzzSharp.json` - HarfBuzz text shaping
 
+A config can also set `entryPointPrefix` to the name of a C# string constant: every generated
+P/Invoke then binds to `<constant> + "<native name>"`. `libHarfBuzzSharp.json` uses it so the Unity
+WebGL variant can call the `sksharp_`-renamed harfbuzz (see `documentation/wasm-symbol-renaming.md`).
+
 ### Verify
 
 This can be run with:

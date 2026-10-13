@@ -543,13 +543,17 @@ namespace SkiaSharpGenerator
 					writer.WriteLine($"\t\t// {function}");
 					writer.WriteLine($"\t\t#if !USE_DELEGATES");
 					writer.WriteLine($"\t\t#if USE_LIBRARY_IMPORT");
-					writer.WriteLine($"\t\t[LibraryImport ({config.DllName})]");
+					var entryPoint = string.IsNullOrEmpty(config.EntryPointPrefix)
+						? null
+						: $"{config.EntryPointPrefix} + \"{name}\"";
+					var entryPointArg = entryPoint == null ? "" : $", EntryPoint = {entryPoint}";
+					writer.WriteLine($"\t\t[LibraryImport ({config.DllName}{entryPointArg})]");
 					if (!string.IsNullOrEmpty(retAttr))
 						writer.WriteLine($"\t\t{retAttr}");
 					writer.WriteLine($"\t\tinternal static partial {returnType} {name} ({string.Join(", ", paramsListWithFuncPointers)});");
 
 					writer.WriteLine($"\t\t#else // !USE_LIBRARY_IMPORT");
-					writer.WriteLine($"\t\t[DllImport ({config.DllName}, CallingConvention = CallingConvention.Cdecl)]");
+					writer.WriteLine($"\t\t[DllImport ({config.DllName}{entryPointArg}, CallingConvention = CallingConvention.Cdecl)]");
 					if (!string.IsNullOrEmpty(retAttr))
 						writer.WriteLine($"\t\t{retAttr}");
 					writer.WriteLine($"\t\tinternal static extern {returnType} {name} ({string.Join(", ", paramsList)});");
@@ -564,7 +568,7 @@ namespace SkiaSharpGenerator
 					writer.WriteLine($"\t\t}}");
 					writer.WriteLine($"\t\tprivate static Delegates.{name} {name}_delegate;");
 					writer.WriteLine($"\t\tinternal static {returnType} {name} ({string.Join(", ", paramsList)}) =>");
-					writer.WriteLine($"\t\t\t({name}_delegate ??= GetSymbol<Delegates.{name}> (\"{name}\")).Invoke ({string.Join(", ", paramNamesList)});");
+					writer.WriteLine($"\t\t\t({name}_delegate ??= GetSymbol<Delegates.{name}> ({entryPoint ?? $"\"{name}\""})).Invoke ({string.Join(", ", paramNamesList)});");
 					writer.WriteLine($"\t\t#endif");
 				}
 				writer.WriteLine();
