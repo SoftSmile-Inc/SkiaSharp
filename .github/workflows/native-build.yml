@@ -1,0 +1,473 @@
+name: Native build
+
+# Builds the library bundle for the Unity project: see documentation/ci/native-build.md.
+#
+# No pull_request trigger: this is a public fork.
+#
+# The target ref is resolved once to a commit that every job builds; the CI
+# scripts (.github/scripts) come from the workflow's own commit, checked out
+# into .ci/, so the target ref does not need to carry the CI.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch or tag of this fork to build'
+        required: true
+        type: string
+      emscripten_version:
+        description: 'Must match the emscripten Unity ships (6000.3.8f1 -> 3.1.39)'
+        required: false
+        type: string
+        default: '3.1.39'
+      emscripten_features:
+        description: 'Entries starting with _ affect compilation but not the output path'
+        required: false
+        type: string
+        default: '_wasmeh,st,simd'
+      unity_version:
+        description: 'Recorded in versions.json so the consuming project can detect a Unity upgrade'
+        required: false
+        type: string
+        default: '6000.3.8f1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-build-${{ inputs.ref }}
+  cancel-in-progress: false
+
+jobs:
+
+  prepare:
+    name: Resolve versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      ref: ${{ steps.resolve.outputs.ref }}
+      sha: ${{ steps.resolve.outputs.sha }}
+      bundle_version: ${{ steps.resolve.outputs.bundle_version }}
+      emscripten_version: ${{ steps.resolve.outputs.emscripten_version }}
+      emscripten_features: ${{ steps.resolve.outputs.emscripten_features }}
+      unity_version: ${{ steps.resolve.outputs.unity_version }}
+      wasm_subpath: ${{ steps.resolve.outputs.wasm_subpath }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          submodules: false
+          persist-credentials: false
+
+      - id: resolve
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+          INPUT_EMSCRIPTEN: ${{ inputs.emscripten_version }}
+          INPUT_FEATURES: ${{ inputs.emscripten_features }}
+          INPUT_UNITY: ${{ inputs.unity_version }}
+        run: |
+          set -euo pipefail
+
+          # cake lowercases both values before using them, so do the same.
+          emscripten="${INPUT_EMSCRIPTEN,,}"
+          features="${INPUT_FEATURES,,}"
+          unity="$INPUT_UNITY"
+          ref="$INPUT_REF"
+
+          [[ $emscripten =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+            || { echo "invalid emscripten_version: '$emscripten'" >&2; exit 1; }
+          [[ $features =~ ^[a-z0-9_]+(,[a-z0-9_]+)*$ ]] \
+            || { echo "invalid emscripten_features: '$features' (comma-separated, no spaces)" >&2; exit 1; }
+          [[ $unity =~ ^[0-9A-Za-z.]+$ ]] \
+            || { echo "invalid unity_version: '$unity'" >&2; exit 1; }
+
+          # Only a branch or tag of this repository may be built: no bare SHAs,
+          # no refs/pull/*, no commits that live only in some other fork.
+          git ls-remote --exit-code "https://github.com/${GITHUB_REPOSITORY}.git" \
+              "refs/heads/$ref" "refs/tags/$ref" >/dev/null \
+            || { echo "ref '$ref' is not a branch or tag of ${GITHUB_REPOSITORY}" >&2; exit 1; }
+
+          # Every job builds this exact commit, whatever the ref moves to meanwhile.
+          sha="$(git rev-parse HEAD)"
+
+          base="$(awk '$1 == "SkiaSharp" && $2 == "nuget" { print $3; exit }' scripts/VERSIONS.txt)"
+          [ -n "$base" ] || { echo "no SkiaSharp nuget version in scripts/VERSIONS.txt" >&2; exit 1; }
+
+          bundle="${base}-dev.$(git rev-parse --short HEAD)"
+
+          # The bundle version ends up in an artifact name and a file name.
+          [[ $bundle =~ ^[0-9A-Za-z.-]+$ ]] \
+            || { echo "bundle version '$bundle' is not a valid artifact name" >&2; exit 1; }
+
+          # The cake script drops feature entries starting with '_' from the
+          # output path and joins the rest with commas, so _wasmeh,st,simd
+          # lands in <version>/st,simd/. Mirror that here instead of hardcoding.
+          modifiers="$(tr ',' '\n' <<< "$features" | { grep -vE '^(_|none$)' || true; } | paste -sd, -)"
+          if [ -n "$modifiers" ]; then
+            subpath="${emscripten}/${modifiers}"
+          else
+            subpath="${emscripten}"
+          fi
+
+          {
+            echo "ref=$ref"
+            echo "sha=$sha"
+            echo "bundle_version=$bundle"
+            echo "emscripten_version=$emscripten"
+            echo "emscripten_features=$features"
+            echo "unity_version=$unity"
+            echo "wasm_subpath=$subpath"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Build parameters"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| ref | \`$ref\` |"
+            echo "| commit | \`$sha\` |"
+            echo "| CI commit | \`$GITHUB_SHA\` |"
+            echo "| bundle version | \`$bundle\` |"
+            echo "| emscripten | \`$emscripten\` |"
+            echo "| features | \`$features\` |"
+            echo "| wasm output subpath | \`$subpath\` |"
+            echo "| unity | \`$unity\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  wasm:
+    name: wasm (libSkiaSharp.a)
+    needs: prepare
+    runs-on: ubuntu-latest
+    # A cold build takes 7-12 minutes.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          submodules: false
+          persist-credentials: false
+
+      # After the main checkout: its clean step would delete .ci otherwise.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: .ci
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      # Only the two submodules the build needs; docs/ is irrelevant here.
+      - name: Initialise skia and depot_tools
+        run: git submodule update --init --depth 1 externals/skia externals/depot_tools
+
+      # This command is fixed and must not change. It also builds
+      # libHarfBuzzSharp.a, which is not shipped: in WebGL HarfBuzzSharp binds
+      # to the harfbuzz built into Unity.
+      - name: Build
+        env:
+          EMSCRIPTEN_VERSION: ${{ needs.prepare.outputs.emscripten_version }}
+          EMSCRIPTEN_FEATURES: ${{ needs.prepare.outputs.emscripten_features }}
+        run: |
+          set -euo pipefail
+          bash scripts/Docker/wasm/build-local.sh "$EMSCRIPTEN_VERSION" \
+            --wasmRenameThirdPartySymbols=true \
+            --emscriptenFeatures="$EMSCRIPTEN_FEATURES"
+
+      # The build runs as root inside the container, so the tree it wrote is
+      # root-owned on the host.
+      - name: Take ownership of build output
+        run: sudo chown -R "$(id -u):$(id -g)" output native externals
+
+      - name: Check symbols
+        env:
+          EMSCRIPTEN_VERSION: ${{ needs.prepare.outputs.emscripten_version }}
+          SUBPATH: ${{ needs.prepare.outputs.wasm_subpath }}
+        run: |
+          # Without pipefail the step would take tee's exit status and a failing
+          # check would pass silently. stderr goes along so FAIL lines reach
+          # the summary too.
+          set -euo pipefail
+          bash .ci/.github/scripts/check-wasm-symbols.sh \
+            "skiasharp-wasm:${EMSCRIPTEN_VERSION}" \
+            "output/native/wasm/libSkiaSharp.a/${SUBPATH}/libSkiaSharp.a" \
+            2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Collect slots
+        env:
+          SUBPATH: ${{ needs.prepare.outputs.wasm_subpath }}
+        run: |
+          set -euo pipefail
+          mkdir -p slots/WebGL
+          cp "output/native/wasm/libSkiaSharp.a/${SUBPATH}/libSkiaSharp.a" slots/WebGL/
+          ls -l slots/WebGL
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: slots-wasm
+          path: slots
+          if-no-files-found: error
+          retention-days: 14
+
+      # For investigating a failed check without a rebuild.
+      - name: Keep build output on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-failed-${{ github.run_attempt }}
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            output/native/wasm/**
+            native/wasm/libSkiaSharp/wasm_symbol_renames.h
+
+  linux:
+    name: linux (libHarfBuzzSharp.so)
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          submodules: false
+          persist-credentials: false
+
+      - name: Initialise skia and depot_tools
+        run: git submodule update --init --depth 1 externals/skia externals/depot_tools
+
+      # The pinned depot_tools uses bare @functools.lru_cache, which Python 3.7
+      # in the debian:10 image rejects. native/linux/build.cake patches it only
+      # in the libSkiaSharp task, which this job does not run.
+      - name: Patch depot_tools for Python 3.7
+        run: |
+          set -euo pipefail
+          f=externals/depot_tools/gclient_paths.py
+          sed -i -E 's/@functools\.lru_cache[[:space:]]*$/@functools.lru_cache()/' "$f"
+          if grep -nE '@functools\.lru_cache[[:space:]]*$' "$f"; then
+            echo "::error::unpatched lru_cache decorator left in $f"
+            exit 1
+          fi
+
+      # Only the libHarfBuzzSharp target: one amalgamated .cc, not a full Skia
+      # build. libSkiaSharp.so comes from nuget.org -- the fork's Linux change
+      # touches only this target. Since 3.119.4 upstream builds Linux with clang
+      # cross-compiling in debian/10 (same debian 10 glibc as debian/amd64 before).
+      - name: Build
+        run: |
+          set -euo pipefail
+          if [ -d scripts/Docker/debian/amd64 ]; then
+            (cd scripts/Docker/debian/amd64 && docker build --tag skiasharp-linux-x64 .)
+            cake=native/linux/build.cake
+          else
+            (cd scripts/Docker/debian/10 && docker build --tag skiasharp-linux-x64 --build-arg BUILD_ARCH=x64 .)
+            cake=native/linux-clang-cross/build.cake
+          fi
+          docker run --rm --volume "$PWD:/work" skiasharp-linux-x64 /bin/bash -c \
+            "dotnet tool restore && dotnet cake $cake --target=libHarfBuzzSharp --buildarch=x64"
+
+      - name: Take ownership of build output
+        run: sudo chown -R "$(id -u):$(id -g)" output externals
+
+      - name: Collect slots
+        run: |
+          set -euo pipefail
+          mkdir -p slots/x86_64
+          cp output/native/linux/x64/libHarfBuzzSharp.so slots/x86_64/
+          ls -l slots/x86_64
+
+      # With the flag no hb_* call goes through the PLT; the stock build has dozens.
+      - name: Check -Bsymbolic-functions took effect
+        run: |
+          set -euo pipefail
+          so=slots/x86_64/libHarfBuzzSharp.so
+          relocs="$(readelf -r --wide "$so")"
+          total="$(awk '/JUMP_SLOT/' <<< "$relocs" | wc -l)"
+          hb="$(awk '/JUMP_SLOT/ && / hb_/' <<< "$relocs" | wc -l)"
+          {
+            echo "### libHarfBuzzSharp.so"
+            echo
+            echo "- JUMP_SLOT relocations: $total, hb_* among them: $hb"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          [ "$total" -gt 0 ] || { echo "FAIL: no JUMP_SLOT relocations at all -- unexpected readelf output" | tee -a "$GITHUB_STEP_SUMMARY" >&2; exit 1; }
+          [ "$hb" -eq 0 ] || { echo "FAIL: $hb hb_* PLT entries -- -Wl,-Bsymbolic-functions not applied" | tee -a "$GITHUB_STEP_SUMMARY" >&2; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: slots-linux
+          path: slots
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Keep build output on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-failed-${{ github.run_attempt }}
+          if-no-files-found: ignore
+          retention-days: 7
+          path: output/native/linux/**
+
+  managed:
+    name: managed (__Internal variants)
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          submodules: false
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      # setup-dotnet only installs SDK 8; without a pin the newest SDK on the
+      # runner wins, and the repo's global.json has no version.
+      - name: Pin SDK 8
+        run: |
+          set -euo pipefail
+          ver="$(dotnet --list-sdks | awk '/^8\.0\./ { v = $1 } END { print v }')"
+          [ -n "$ver" ] || { echo "no 8.0.x SDK installed" >&2; exit 1; }
+          jq --arg v "$ver" '.sdk.version = $v | .sdk.rollForward = "latestFeature"' global.json > "$RUNNER_TEMP/global.json"
+          mv "$RUNNER_TEMP/global.json" global.json
+          dotnet --version | tee -a "$GITHUB_STEP_SUMMARY"
+          case "$(dotnet --version)" in 8.0.*) ;; *) echo "SDK pin did not take effect" >&2; exit 1 ;; esac
+
+      # netstandard2.1, not net8.0. TargetFrameworks is narrowed too: since
+      # 3.119.4 the projects also list net10.0 and -android on Linux, which SDK 8
+      # cannot restore. -p:DefineConstants would clobber the project's own
+      # defines, hence the property.
+      - name: Build
+        run: |
+          set -euo pipefail
+          for project in binding/SkiaSharp/SkiaSharp.csproj binding/HarfBuzzSharp/HarfBuzzSharp.csproj; do
+            dotnet build "$project" -f netstandard2.1 -p:TargetFrameworks=netstandard2.1 -c Release \
+              -p:SkiaSharpUnityWebGLInternal=true \
+              -o artifacts/unity-webgl
+          done
+
+      # strings is captured first: piping it into grep -q under pipefail fails
+      # on SIGPIPE whenever grep matches early.
+      - name: Check __Internal took effect
+        run: |
+          set -euo pipefail
+          failed=0
+          report="$RUNNER_TEMP/internal-check.txt"
+          : > "$report"
+          for dll in SkiaSharp HarfBuzzSharp; do
+            file="artifacts/unity-webgl/${dll}.dll"
+            s="$(strings -a "$file")"
+            if grep -qx '__Internal' <<< "$s"; then
+              echo "ok:   ${dll}.dll uses __Internal" >> "$report"
+            else
+              echo "FAIL: ${dll}.dll does not contain __Internal" >> "$report"
+              failed=1
+            fi
+            if grep -qxE 'libSkiaSharp|libHarfBuzzSharp' <<< "$s"; then
+              echo "FAIL: ${dll}.dll still references a dynamic module name" >> "$report"
+              failed=1
+            fi
+          done
+          # The bundle has no WebGL harfbuzz archive: HarfBuzzSharp must call the
+          # plain hb_* names of the harfbuzz built into Unity.
+          s="$(strings -a artifacts/unity-webgl/HarfBuzzSharp.dll)"
+          hb="$(grep -c '^hb_' <<< "$s" || true)"
+          renamed="$(grep -c '^sksharp_' <<< "$s" || true)"
+          if [ "$hb" -gt 0 ] && [ "$renamed" -eq 0 ]; then
+            echo "ok:   HarfBuzzSharp.dll calls $hb plain hb_* functions" >> "$report"
+          else
+            echo "FAIL: HarfBuzzSharp.dll has $hb plain hb_* and $renamed sksharp_* names, expected plain hb_* only" >> "$report"
+            failed=1
+          fi
+          tee -a "$GITHUB_STEP_SUMMARY" < "$report"
+          exit "$failed"
+
+      - name: Collect slots
+        run: |
+          set -euo pipefail
+          mkdir -p slots/WebGL
+          cp artifacts/unity-webgl/SkiaSharp.dll artifacts/unity-webgl/HarfBuzzSharp.dll slots/WebGL/
+          ls -l slots/WebGL
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: slots-managed
+          path: slots
+          if-no-files-found: error
+          retention-days: 14
+
+  stock:
+    name: stock natives from nuget.org
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          submodules: false
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: .ci
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Fetch
+        run: bash .ci/.github/scripts/fetch-stock-natives.sh slots
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: slots-stock
+          path: slots
+          if-no-files-found: error
+          retention-days: 14
+
+  bundle:
+    name: Bundle
+    needs: [prepare, wasm, linux, managed, stock]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          submodules: false
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: .ci
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: slots
+          pattern: slots-*
+          merge-multiple: true
+
+      - name: Assemble
+        env:
+          BUNDLE_VERSION: ${{ needs.prepare.outputs.bundle_version }}
+          BUILD_REF: ${{ needs.prepare.outputs.ref }}
+          BUILD_COMMIT: ${{ needs.prepare.outputs.sha }}
+          CI_COMMIT: ${{ github.sha }}
+          EMSCRIPTEN_VERSION: ${{ needs.prepare.outputs.emscripten_version }}
+          EMSCRIPTEN_FEATURES: ${{ needs.prepare.outputs.emscripten_features }}
+          UNITY_VERSION: ${{ needs.prepare.outputs.unity_version }}
+        run: |
+          set -euo pipefail
+          bash .ci/.github/scripts/make-bundle.sh slots \
+            "dist/skiasharp-unity-${BUNDLE_VERSION}.zip" 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ needs.prepare.outputs.bundle_version }}
+          path: dist
+          if-no-files-found: error
+          retention-days: 14
