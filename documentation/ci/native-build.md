@@ -69,7 +69,9 @@ Eg. from 3.119.2 to 3.119.4:
    A conflict means upstream changed the same lines as one of the fork's commits: take upstream's
    code and add the fork's change back into it. For `documentation/README.md`, just keep
    upstream's file. `patches/3.119.4` shows how this was done for 3.119.2 → 3.119.4.
-2. Build `patches/3.119.4` as above. If a job fails because upstream changed how things are built
+2. Build `patches/3.119.4` as [above](#Building): set `-f` argument to `ref=patches/3.119.4`.
+
+   If a job fails because upstream changed how things are built
    (Docker images, .NET SDK, target frameworks), the workflow on `ci/native-build` needs a fix.
-3. Put the new files into the Unity project, make a WebGL build and check text rendering in a
+4. Put the new files into the Unity project, make a WebGL build and check text rendering in a
    browser. CI can't check the Unity side.
